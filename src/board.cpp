@@ -1,15 +1,43 @@
+/*******************************************************************************
+ * BOARD - Sudoku Board Data Structure
+ * 
+ * This file implements the Board class, which represents a Sudoku puzzle
+ * as a data structure. The Board stores:
+ * - Cell values and their possibilities (using ValueSet)
+ * - Puzzle dimensions (order, numUnits, numCells)
+ * - Status counters (numFixedCells, numInfeasible)
+ * 
+ * Constraint propagation logic has been extracted to constraintpropagation.cpp
+ * for better code organization.
+ ******************************************************************************/
+
 #include "board.h"
+#include "constraintpropagation.h"
 #include <iostream>
 #include <iomanip>
 #include <inttypes.h>
 #include <string>
 #include <sstream>
-//
-// description of a sudoku board, with functions for setting cells and propagating constraints
-//
+
+// ============================================================================
+// SECTION 1: PUZZLE READING & INITIALIZATION
+// ============================================================================
+
+/*******************************************************************************
+ * Board Constructor - Parse puzzle string and initialize board
+ * 
+ * Reads a puzzle string where:
+ * - '.' represents an empty cell
+ * - Digits/letters represent fixed cells
+ * 
+ * Puzzle sizes supported: 9x9 (81 cells), 16x16 (256 cells), 25x25 (625 cells),
+ * 36x36 (1296 cells), etc.
+ * 
+ * After parsing, constraint propagation is applied to deduce additional cells.
+ ******************************************************************************/
 Board::Board(const string &puzzleString)
 {
-	// check this is an order 3, 4, or 5 puzzle
+	// Determine puzzle order based on string length
 	switch (puzzleString.length())
 	{
 	case 81:
@@ -43,17 +71,22 @@ Board::Board(const string &puzzleString)
 
 	int maxVal = numUnits;
 
+	// Initialize all cells with all possible values
 	for (int i = 0; i < numCells; i++)
 		cells[i].Init(maxVal);
 
-	// set all possibilities for all cells
 	for ( int i = 0; i < numCells; i++ )
 	{
 		cells[i] = ~cells[i];
 	}
-	// set the known cells one by one
+	
+	// Set the known cells one by one using constraint propagation
 	numInfeasible = 0;
 	numFixedCells = 0;
+	
+	// Mark that we're in initial CP phase (for timing)
+	BeginInitialCP();
+	
 	for (int i = 0; i < numCells; i++)
 	{
 		if (puzzleString[i] != '.')
@@ -74,16 +107,25 @@ Board::Board(const string &puzzleString)
 			default:
 				value = 1+(int)(puzzleString[i] - 'a');
 			}
-			SetCell( i, ValueSet(maxVal, (int64_t)1 << (value-1) ));
+			SetCellAndPropagate(*this, i, ValueSet(maxVal, (int64_t)1 << (value-1) ));
 		}
 	}
+	
+	// End initial CP phase
+	EndInitialCP();
 }
 
+/*******************************************************************************
+ * Copy Constructor - Create a new board as a copy of another
+ ******************************************************************************/
 Board::Board(const Board &other)
 {
 	Copy(other);
 }
 
+/*******************************************************************************
+ * Copy - Deep copy another board's state
+ ******************************************************************************/
 void Board::Copy(const Board& other)
 {
 	order = other.order;
@@ -102,59 +144,127 @@ void Board::Copy(const Board& other)
 	numInfeasible = other.InfeasibleCellCount();
 }
 
+/*******************************************************************************
+ * Destructor - Clean up allocated memory
+ ******************************************************************************/
 Board::~Board()
 {
 	if ( cells != nullptr ) delete [] cells;
 }
 
+// ============================================================================
+// SECTION 2: GEOMETRIC HELPER FUNCTIONS
+// These functions convert between different cell indexing schemes
+// ============================================================================
+
+/*******************************************************************************
+ * RowCell - Get the index of the iCell'th cell in the iRow'th row
+ ******************************************************************************/
 int Board::RowCell(int iRow, int iCell) const
 {
-	// returns cell index of the iCell'th cell in the iRow'th row
 	return iRow * numUnits + iCell;
 }
 
+/*******************************************************************************
+ * ColCell - Get the index of the iCell'th cell in the iCol'th column
+ ******************************************************************************/
 int Board::ColCell(int iCol, int iCell) const
 {
-	// returns cell index of the iCell'th cell in the iCol'th column
 	return iCell * numUnits + iCol;
 }
 
+/*******************************************************************************
+ * BoxCell - Get the index of the iCell'th cell in the iBox'th box
+ ******************************************************************************/
 int Board::BoxCell(int iBox, int iCell) const
 {
-	// returns cell index of the iCell'th cell in the iBox'th box
 	int boxCol = iBox%order;
 	int boxRow = iBox / order;
 	int topCorner =  (boxCol*order) + boxRow*order*order*order;
 	return topCorner + (iCell%order) + (iCell / order)*order*order;
 }
 
+/*******************************************************************************
+ * RowForCell - Get the row index containing the given cell
+ ******************************************************************************/
 int Board::RowForCell(int iCell) const
 {
-	// returns index of the row which contains cell iCell 
 	return iCell / numUnits;
 }
 
+/*******************************************************************************
+ * ColForCell - Get the column index containing the given cell
+ ******************************************************************************/
 int Board::ColForCell(int iCell) const
 {
-	// returns index of the column which contains cell iCell 
 	return iCell % numUnits;
 }
 
+/*******************************************************************************
+ * BoxForCell - Get the box index containing the given cell
+ ******************************************************************************/
 int Board::BoxForCell(int iCell) const
 {
-	// returns index of the box which contains cell iCell 
 	return order*(iCell / (order*order*order)) + ((iCell%(order*order))/order);
 }
 
+// ============================================================================
+// SECTION 3: BOARD QUERY/STATUS FUNCTIONS
+// ============================================================================
+
+/*******************************************************************************
+ * GetCell - Access a cell's ValueSet
+ ******************************************************************************/
+const ValueSet& Board::GetCell(int i) const
+{
+	return cells[i];
+}
+
+/*******************************************************************************
+ * FixedCellCount - Number of cells with uniquely determined values
+ ******************************************************************************/
+int Board::FixedCellCount(void) const
+{
+	return numFixedCells;
+}
+
+/*******************************************************************************
+ * InfeasibleCellCount - Number of cells with no possible values (error state)
+ ******************************************************************************/
+int Board::InfeasibleCellCount(void) const
+{
+	return numInfeasible;
+}
+
+/*******************************************************************************
+ * CellCount - Total number of cells in the board
+ ******************************************************************************/
+int Board::CellCount(void) const
+{
+	return numCells;
+}
+
+/*******************************************************************************
+ * GetNumUnits - Number of units (rows, columns, or boxes)
+ ******************************************************************************/
+int Board::GetNumUnits(void) const
+{
+	return numUnits;
+}
+
+// ============================================================================
+// SECTION 4: OUTPUT & VISUALIZATION
+// ============================================================================
+
+/*******************************************************************************
+ * AsString - Convert board to human-readable string representation
+ * 
+ * Parameters:
+ *   useNumbers    - Use numeric representation (1..numUnits) vs single chars
+ *   showUnfixed   - Show possibilities for unfixed cells (vs '.')
+ ******************************************************************************/
 string Board::AsString(bool useNumbers, bool showUnfixed )
 {
-	/*
-	  Form a human-readable string from the board, using either numbers (1..numUnits) or a single character
-	  per cell (9x9 - 1-9, 16x16 0-f, 25x25 - a-y). If showUnfixed is true, show the possibilies in
-	  an unfixed cell (otherwise represent it is as '.'). If order is 4 or 5 and showUnfixed is true, force useNumbers to 
-	  false for readability.
-	 */
-
 	if ( showUnfixed )
 		useNumbers = false;
 
@@ -215,136 +325,29 @@ string Board::AsString(bool useNumbers, bool showUnfixed )
 	return puzString.str();
 }
 
-void Board::ConstrainCell(int i )
-{
-	if ( cells[i].Empty() || cells[i].Fixed()  )
-		return; // already set or empty
-	
-	int iBox, iCol, iRow;
-	iBox = BoxForCell(i);
-	iCol = ColForCell(i);
-	iRow = RowForCell(i);
-
-	// set of all fixed cells in row, column, box
-	ValueSet colFixed(numUnits), rowFixed(numUnits), boxFixed(numUnits);
-    // set of all open values in row, column, box, not including this cell
-	ValueSet colAll(numUnits), rowAll(numUnits), boxAll(numUnits);
-
-	for (int j = 0; j < numUnits; j++)
-	{
-		int k;
-		k = BoxCell(iBox, j);
-		if (k != i)
-		{
-			if ( cells[k].Fixed() )
-				boxFixed += cells[k];
-			boxAll += cells[k];
-		}
-		k = ColCell(iCol, j);
-		if (k != i)
-		{
-			if ( cells[k].Fixed() )
-				colFixed += cells[k];
-			colAll += cells[k];
-		}
-		k = RowCell(iRow, j);
-		if (k != i)
-		{
-			if ( cells[k].Fixed() )
-				rowFixed += cells[k];
-			rowAll += cells[k];
-		}
-	}
-	ValueSet fixedCellsConstraint = ~(rowFixed + colFixed + boxFixed);
-
-	if ( fixedCellsConstraint.Fixed() ) 
-		SetCell( i, fixedCellsConstraint ); // only one possibility left
-	else
-	{
-		// eliminate all the values already taken in this cell's units
-		cells[i] ^= fixedCellsConstraint;
-		// are any of the remaining values for this cell in the only possible
-		// place in a unit? If so, set the cell to that value
-		if ((cells[i]-rowAll).Fixed())
-			SetCell(i, cells[i]-rowAll);
-		else if ((cells[i]-colAll).Fixed())
-			SetCell(i, cells[i]-colAll);
-		else if ((cells[i]-boxAll).Fixed())
-			SetCell(i, cells[i]-boxAll);
-	}
-	if ( cells[i].Empty())
-		numInfeasible++;
-}
-
-void Board::SetCell(int i, const ValueSet &c )
-{
-	if ( cells[i].Fixed())
-		return; // already set
-	// set the cell
-	cells[i] = c;
-	++numFixedCells;
-	// propagate the constraints
-  	int iBox, iCol, iRow;
-	iBox = BoxForCell(i);
-	iCol = ColForCell(i);
-	iRow = RowForCell(i);
-
-	for (int j = 0; j < numUnits; j++)
-	{
-		int k;
-		k = BoxCell(iBox, j);
-		if (k != i)
-			ConstrainCell(k);
-		k = ColCell(iCol, j);
-		if (k != i)
-		    ConstrainCell(k);
-		k = RowCell(iRow, j);
-		if (k != i)
-			ConstrainCell(k);
-	}
-}
-
-const ValueSet& Board::GetCell(int i) const
-{
-	return cells[i];
-}
-
-int Board::FixedCellCount(void) const
-{
-	return numFixedCells;
-}
-
-int Board::InfeasibleCellCount(void) const
-{
-	return numInfeasible;
-}
-
-int Board::CellCount(void) const
-{
-	return numCells;
-}
-
-int Board::GetNumUnits(void) const
-{
-	return numUnits;
-}
-
+/*******************************************************************************
+ * CheckSolution - Verify that another board is a valid solution to this puzzle
+ * 
+ * Checks:
+ * 1. All cells are filled
+ * 2. All rows, columns, and boxes contain each number exactly once
+ * 3. Fixed cells in this puzzle match the solution
+ ******************************************************************************/
 bool Board::CheckSolution(const Board& other) const
 {
-	// check that other is 1/ a solution, 2/ consistent with this board
 	if (other.CellCount() != CellCount())
 		return false;
 	bool isSolution = true;
 	bool isConsistent = true;
 
-	// check its a solution
-	// first - all cells must be filled
+	// Check it's a complete solution - all cells must be filled
 	for (int i = 0; i < other.CellCount(); i++)
 	{
 		if (!other.GetCell(i).Fixed())
 			isSolution = false;
 	}
-	// second - all rows, columns, boxes must have one of each number
+	
+	// Check all rows, columns, boxes have one of each number
 	for (int i = 0; i < numUnits; i++)
 	{
 		ValueSet row, col, box;
@@ -361,7 +364,7 @@ bool Board::CheckSolution(const Board& other) const
 			isSolution = false;
 	}
 
-	// check consistency with this board
+	// Check consistency with this board's fixed cells
 	for (int i = 0; i < CellCount(); i++)
 	{
 		if (GetCell(i).Fixed())
@@ -374,3 +377,34 @@ bool Board::CheckSolution(const Board& other) const
 	return isSolution && isConsistent;
 }
 
+// ============================================================================
+// SECTION 5: INTERNAL HELPER METHODS FOR CONSTRAINT PROPAGATION
+// These methods are used by constraintpropagation.cpp
+// ============================================================================
+
+/*******************************************************************************
+ * SetCellDirect - Set a cell value without propagation
+ * Used internally by constraint propagation module
+ ******************************************************************************/
+void Board::SetCellDirect(int i, const ValueSet &c)
+{
+	cells[i] = c;
+}
+
+/*******************************************************************************
+ * IncrementFixedCells - Update the fixed cell counter
+ * Used internally by constraint propagation module
+ ******************************************************************************/
+void Board::IncrementFixedCells()
+{
+	++numFixedCells;
+}
+
+/*******************************************************************************
+ * IncrementInfeasible - Update the infeasible cell counter
+ * Used internally by constraint propagation module
+ ******************************************************************************/
+void Board::IncrementInfeasible()
+{
+	++numInfeasible;
+}

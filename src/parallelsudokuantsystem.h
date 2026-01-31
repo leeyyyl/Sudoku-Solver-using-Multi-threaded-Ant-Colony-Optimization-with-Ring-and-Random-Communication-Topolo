@@ -5,6 +5,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
+#include <chrono>
 #include "antcolonyinterface.h"
 #include "sudokuant.h"
 #include "board.h"
@@ -100,8 +101,12 @@ private:
 	int globalBestScore;
 	int iterationsCompleted;
 	bool communicationOccurred;
+	float communicationTime;
 	float solTime;
 	Timer solutionTimer;
+	std::atomic<bool> communicationPhaseActive;
+	std::atomic<int> communicationPhaseDone;
+	std::chrono::high_resolution_clock::time_point communicationPhaseStart;
 	
 	std::mt19937 masterRandGen;
 	
@@ -126,6 +131,7 @@ private:
 	void PerformBarrierSynchronization(const Board& puzzle);
 	void ExecuteMasterThreadTasks(const Board& puzzle);
 	void ExecuteWorkerThreadWait(std::unique_lock<std::mutex>& lock);
+	void CompleteCommunicationPhase();
 	
 public:
 	ParallelSudokuAntSystem(int numSubColonies, int numAntsPerColony, 
@@ -137,5 +143,6 @@ public:
 	virtual const Board& GetSolution() { return globalBest; }
 	int GetIterationsCompleted() { return iterationsCompleted; }
 	bool GetCommunicationOccurred() { return communicationOccurred; }
+	float GetCommunicationTime() { return communicationTime; }
 };
 

@@ -1,8 +1,9 @@
 //
-// backtracking search using the same constraint propagation code as the ant colony system
+// backtracking search using the same comstraint propagation code as the ant colony system
 // HL 18/9/2017
 //
 #include "backtracksearch.h"
+#include "constraintpropagation.h"
 
 void BacktrackSearch::StepSolution(const Board &puzzle)
 {
@@ -51,7 +52,7 @@ void BacktrackSearch::StepSolution(const Board &puzzle)
 			Board newBoard;
 			newBoard.Copy(puzzle);
 			// set the cell
-			newBoard.SetCell(nextCell, choice);
+		SetCellAndPropagate(newBoard, nextCell, choice);
 			// did we solve the puzzle?
 			if (newBoard.FixedCellCount() == newBoard.CellCount())
 			{

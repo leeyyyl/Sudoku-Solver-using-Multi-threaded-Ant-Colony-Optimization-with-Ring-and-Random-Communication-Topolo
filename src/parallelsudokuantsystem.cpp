@@ -307,7 +307,9 @@ void SubColony::ReceiveBestSol(const Board& solution)
 ParallelSudokuAntSystem::ParallelSudokuAntSystem(int nSubColonies, int numAntsPerColony,
 	float q0, float rho, float pher0, float bestEvap)
 	: numSubColonies(nSubColonies), maxTime(120.0f),
-	  globalBestScore(0), iterationsCompleted(0), communicationOccurred(false), solTime(0.0f), barrier(0), stopFlag(false)
+	  globalBestScore(0), iterationsCompleted(0), communicationOccurred(false), communicationTime(0.0f),
+	  solTime(0.0f), barrier(0), stopFlag(false),
+	  communicationPhaseActive(false), communicationPhaseDone(0)
 {
 	// Create N independent sub-colonies
 	// Note: rho is used for both standard ACS global update and communication update
@@ -468,7 +470,7 @@ void ParallelSudokuAntSystem::ExecuteMasterThreadTasks(const Board& puzzle)
 {
 	// Mark that communication occurred
 	communicationOccurred = true;
-	
+
 	// Generate random matching for topology 2
 	std::vector<int> matchArray = GenerateMatchArray();
 	
@@ -519,6 +521,25 @@ void ParallelSudokuAntSystem::ExecuteWorkerThreadWait(std::unique_lock<std::mute
 }
 
 // ----------------------------------------------------------------------------
+// CompleteCommunicationPhase: Record total comm interval duration
+// ----------------------------------------------------------------------------
+void ParallelSudokuAntSystem::CompleteCommunicationPhase()
+{
+	int finished = communicationPhaseDone.fetch_add(1) + 1;
+	if (finished == numSubColonies)
+	{
+		auto commEnd = std::chrono::high_resolution_clock::now();
+		std::lock_guard<std::mutex> lock(commMutex);
+		if (communicationPhaseActive.load())
+		{
+			communicationTime += std::chrono::duration<float>(commEnd - communicationPhaseStart).count();
+			communicationPhaseActive.store(false);
+		}
+		communicationPhaseDone.store(0);
+	}
+}
+
+// ----------------------------------------------------------------------------
 // PerformBarrierSynchronization: Coordinate all threads for communication
 // Implements barrier pattern with master/worker roles
 // ----------------------------------------------------------------------------
@@ -541,6 +562,11 @@ void ParallelSudokuAntSystem::PerformBarrierSynchronization(const Board& puzzle)
 	
 	// Increment barrier counter (atomic operation)
 	int arrived = barrier.fetch_add(1) + 1;
+	if (arrived == 1)
+	{
+		communicationPhaseActive.store(true);
+		communicationPhaseStart = std::chrono::high_resolution_clock::now();
+	}
 	
 	// === ROLE ASSIGNMENT ===
 	if (arrived == numSubColonies)
@@ -613,16 +639,16 @@ void ParallelSudokuAntSystem::SubColonyWorker(int colonyId, const Board& puzzle)
 		{
 			// Before iteration 200: communicate every 100 iterations (at 100, 200)
 			// After iteration 200: communicate every 10 iterations (at 210, 220, etc.)
-			if (iter < 200)
-			{
-				// Every 100 iterations: 100, 200
-				shouldCommunicate = (iter % 100 == 0);
-			}
-			else
-			{
-				// Every 10 iterations: 210, 220, 230, etc.
-				shouldCommunicate = (iter % 10 == 0);
-			}
+		if (iter < 200)
+		{
+			// Every 100 iterations: 100, 200
+			shouldCommunicate = (iter % 100 == 0);
+		}
+		else
+		{
+			// Every 10 iterations: 210, 220, 230, etc.
+			shouldCommunicate = (iter % 10 == 0);
+		}
 		}
 		// If numSubColonies == 1, shouldCommunicate stays false (always use Algorithm 0 update)
 		
@@ -634,6 +660,7 @@ void ParallelSudokuAntSystem::SubColonyWorker(int colonyId, const Board& puzzle)
 			// --- STEP 3b: Three-Source Communication Pheromone Update ---
 			// Uses: local iteration-best + received iteration-best + received best-so-far
 			colony->UpdatePheromoneWithCommunication();
+			CompleteCommunicationPhase();
 			
 			// Check stop flag after synchronization
 			if (useLocalStop)
@@ -686,6 +713,10 @@ bool ParallelSudokuAntSystem::Solve(const Board& puzzle, float timeLimit)
 	maxTime = (timeLimit > 0) ? timeLimit : 120.0f;
 	
 	solutionTimer.Reset();
+	communicationOccurred = false;
+	communicationTime = 0.0f;
+	communicationPhaseActive.store(false);
+	communicationPhaseDone.store(0);
 	stopFlag.store(false);   // Shared stop signal (atomic)
 	barrier.store(0);        // Synchronization counter (atomic)
 	

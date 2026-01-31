@@ -1,5 +1,6 @@
 #include "sudokuant.h"
 #include "sudokuantsystem.h"
+#include "constraintpropagation.h"
 
 void SudokuAnt::InitSolution(const Board &puzzle, int startCell )
 {
@@ -43,7 +44,7 @@ void SudokuAnt::StepSolution()
 				}
 				choice <<= 1;
 			}
-			sol.SetCell(iCell, best);
+SetCellAndPropagate(sol, iCell, best);
 			// do local pheromone update here
 			parent->LocalPheromoneUpdate(iCell, best.Index());
 		}
@@ -69,7 +70,7 @@ void SudokuAnt::StepSolution()
 			{
 				if (roulette[i] > rouletteVal)
 				{
-					sol.SetCell(iCell, rouletteVals[i]);
+				SetCellAndPropagate(sol, iCell, rouletteVals[i]);
 					// do local pheromone update here
 					parent->LocalPheromoneUpdate(iCell, rouletteVals[i].Index());
 					break;

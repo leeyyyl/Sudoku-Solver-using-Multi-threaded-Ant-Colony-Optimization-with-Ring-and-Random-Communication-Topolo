@@ -4,6 +4,12 @@
 #include <vector>
 using namespace std;
 
+// Forward declarations for constraint propagation functions
+bool Rule1_Elimination(class Board& board, int cellIndex);
+bool Rule2_HiddenSingle(class Board& board, int cellIndex);
+void PropagateConstraints(class Board& board, int cellIndex);
+void SetCellAndPropagate(class Board& board, int cellIndex, const ValueSet& value);
+
 class Board
 {
 public:
@@ -16,7 +22,6 @@ public:
 	string AsString(bool useNumbers=false, bool showUnfixed = false);
 	int FixedCellCount(void) const;
 	int InfeasibleCellCount(void) const;
-	void SetCell(int i, const ValueSet &c );
 	const ValueSet &GetCell(int i) const;
 
 	int GetNumUnits() const;
@@ -31,6 +36,10 @@ public:
 	int ColForCell(int iCell) const;
 	int BoxForCell(int iCell) const;
 
+	// Internal methods for constraint propagation (used by constraintpropagation.cpp)
+	void SetCellDirect(int i, const ValueSet &c);
+	void IncrementFixedCells();
+	void IncrementInfeasible();
 
 private:
 	ValueSet *cells = nullptr;
@@ -40,6 +49,5 @@ private:
 	int numCells; // number of cells
 	int numFixedCells; // number of cells with uniquely determined value
 	int numInfeasible; // number of cells with no possibilities.
-	void ConstrainCell(int i );
 };
 
