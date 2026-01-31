@@ -23,8 +23,6 @@ from typing import Iterable, List, Optional, Sequence, Tuple
 class InstanceMetadata:
     path: Path
     size_label: str
-    fixed_percentage: Optional[int]
-    instance_id: Optional[int]
 
     @property
     def relative_path(self) -> str:
@@ -72,69 +70,104 @@ def resolve_solver_path(user_value: Optional[str]) -> Path:
     )
 
 
+
+
+def natural_sort_key(path: Path) -> list:
+    """
+    Generate a sort key that handles numeric parts naturally.
+    E.g., '9x9hard_2' comes before '9x9hard_10'
+    """
+    import re
+    parts = []
+    # Use stem so extensions like ".txt" don't affect ordering
+    for part in re.split(r'(\d+)', path.stem):
+        if part.isdigit():
+            parts.append(int(part))
+        else:
+            parts.append(part)
+    return parts
+
+
+def infer_size_label(name: str) -> Optional[str]:
+    match = re.search(r"(9x9|16x16|25x25|36x36)", name, re.IGNORECASE)
+    return match.group(1).lower() if match else None
+
+
+def resolve_instance_timeout(instance_name: str, args: argparse.Namespace) -> float:
+    if args.timeout is not None:
+        return float(args.timeout)
+    size = infer_size_label(instance_name)
+    if size == "9x9":
+        return 5.0
+    if size == "16x16":
+        return 20.0
+    if size == "25x25":
+        return 120.0
+    return 120.0
+
+
 def iter_instance_files(instances_root: Path) -> Iterable[Path]:
     if not instances_root.exists():
         raise FileNotFoundError(f"Instances folder not found: '{instances_root}'.")
-    return sorted(instances_root.glob("*.txt"))
+    # Natural name order (2 before 17, ignore extension)
+    all_files: List[Path] = []
+    for entry in os.scandir(instances_root):
+        if not entry.is_file():
+            continue
+        path = Path(entry.path)
+        if path.suffix == ".txt" or path.suffix == "":
+            all_files.append(path)
+    return sorted(all_files, key=natural_sort_key)
 
 
 def iter_all_instance_files(repo_root: Path) -> Iterable[Path]:
-    """Iterate over both general and logic-solvable instances."""
-    all_files = []
-    
-    # General instances
-    general_root = repo_root / "instances" / "general"
-    if general_root.exists():
-        all_files.extend(general_root.glob("*.txt"))
-    
-    # Logic-solvable instances
-    logic_root = repo_root / "instances" / "logic-solvable"
-    if logic_root.exists():
-        all_files.extend(logic_root.glob("*.txt"))
-    
+    """Iterate over all instance files under instances/*."""
+    instances_root = repo_root / "instances"
+    if not instances_root.exists():
+        raise FileNotFoundError("Instances folder not found: 'instances'.")
+
+    all_files: List[Path] = []
+    for subdir_entry in os.scandir(instances_root):
+        if not subdir_entry.is_dir():
+            continue
+        subdir_path = Path(subdir_entry.path)
+        for entry in os.scandir(subdir_path):
+            if not entry.is_file():
+                continue
+            path = Path(entry.path)
+            if path.suffix == ".txt" or path.suffix == "":
+                all_files.append(path)
+
     if not all_files:
-        raise FileNotFoundError("No instance files found in 'instances/general' or 'instances/logic-solvable'.")
-    
-    return sorted(all_files)
+        raise FileNotFoundError("No instance files found under 'instances/*'.")
+
+    # Natural name order (2 before 17, ignore extension)
+    return sorted(all_files, key=natural_sort_key)
 
 
 def parse_metadata(path: Path) -> InstanceMetadata:
     name = path.stem
-    match = re.match(r"inst(?P<size>[0-9x]+)_(?P<fixed>\d+)_(?P<idx>\d+)", name)
-    size = None
-    fixed = None
-    idx = None
-    if match:
-        size = match.group("size")
-        fixed = int(match.group("fixed"))
-        idx = int(match.group("idx"))
-    else:
-        # Logic-solvable instances: use puzzle name as size_label
-        size = name
-    return InstanceMetadata(path=path, size_label=size or "unknown", fixed_percentage=fixed, instance_id=idx)
+    # Always use the filename stem as the size label (per-instance output)
+    return InstanceMetadata(path=path, size_label=name or "unknown")
 
 
 def sort_instance_metadata(instances: Sequence[InstanceMetadata]) -> List[InstanceMetadata]:
-    size_order = {"9x9": 0, "16x16": 1, "25x25": 2, "36x36": 3}
-
-    def key(meta: InstanceMetadata) -> Tuple[int, int, int, str]:
-        return (
-            size_order.get(meta.size_label, 99),
-            meta.fixed_percentage if meta.fixed_percentage is not None else 999,
-            meta.instance_id if meta.instance_id is not None else 999,
-            meta.path.name,
-        )
-
-    return sorted(instances, key=key)
+    return sorted(instances, key=lambda meta: natural_sort_key(meta.path))
 
 
 def format_instance_argument(instance_path: Path, repo_root: Path) -> str:
     try:
         rel_path = instance_path.relative_to(repo_root)
     except ValueError:
-        return str(instance_path)
-    prefixed = Path(".") / rel_path
-    return str(prefixed)
+        path_str = str(instance_path)
+    else:
+        prefixed = Path(".") / rel_path
+        path_str = str(prefixed)
+    
+    # Quote paths with spaces (for Windows compatibility)
+    if ' ' in path_str:
+        return f'"{path_str}"'
+    return path_str
 
 
 def build_solver_command(
@@ -142,9 +175,10 @@ def build_solver_command(
     instance_path: Path,
     repo_root: Path,
     args: argparse.Namespace,
+    timeout_value: float,
 ) -> List[str]:
     file_arg = format_instance_argument(instance_path, repo_root)
-    cmd: List[str] = [str(solver_path), "--file", file_arg, "--alg", str(args.alg), "--timeout", str(args.timeout)]
+    cmd: List[str] = [str(solver_path), "--file", file_arg, "--alg", str(args.alg), "--timeout", str(timeout_value)]
 
     if args.ants is not None:
         cmd.extend(("--ants", str(args.ants)))
@@ -183,7 +217,7 @@ def run_solver(cmd: Sequence[str], cwd: Path, timeout: Optional[float], show_pro
         )
 
 
-def parse_solver_output(stdout: str, stderr: str) -> Tuple[Optional[bool], Optional[float], Optional[int], Optional[bool], str, str]:
+def parse_solver_output(stdout: str, stderr: str) -> Tuple[Optional[bool], Optional[float], Optional[int], Optional[bool], Optional[float], Optional[float], Optional[int], Optional[float], str, str]:
     stdout_lines = [line.strip() for line in stdout.splitlines() if line.strip()]
     stderr_lines = [line.strip() for line in stderr.splitlines() if line.strip()]
 
@@ -191,6 +225,10 @@ def parse_solver_output(stdout: str, stderr: str) -> Tuple[Optional[bool], Optio
     solve_time: Optional[float] = None
     iterations: Optional[int] = None
     communication: Optional[bool] = None
+    cp_initial: Optional[float] = None
+    cp_ant: Optional[float] = None
+    cp_calls: Optional[int] = None
+    comm_time: Optional[float] = None
 
     # Combine stdout and stderr for parsing (iterations might be in either)
     all_lines = stdout_lines + stderr_lines
@@ -223,6 +261,27 @@ def parse_solver_output(stdout: str, stderr: str) -> Tuple[Optional[bool], Optio
         if comm_match:
             communication = (comm_match.group(1).lower() == "yes")
             continue
+        
+        # Parse CP timing data
+        cp_initial_match = re.search(r"cp_initial:\s*([0-9]*\.?[0-9]+)", line)
+        if cp_initial_match:
+            cp_initial = float(cp_initial_match.group(1))
+            continue
+        
+        cp_ant_match = re.search(r"cp_ant:\s*([0-9]*\.?[0-9]+)", line)
+        if cp_ant_match:
+            cp_ant = float(cp_ant_match.group(1))
+            continue
+        
+        cp_calls_match = re.search(r"cp_calls:\s*([0-9]+)", line)
+        if cp_calls_match:
+            cp_calls = int(cp_calls_match.group(1))
+            continue
+
+        comm_time_match = re.search(r"comm_time:\s*([0-9]*\.?[0-9]+)", line)
+        if comm_time_match:
+            comm_time = float(comm_time_match.group(1))
+            continue
 
     # Fallback: check stdout for time if not found yet
     for line in stdout_lines:
@@ -243,12 +302,12 @@ def parse_solver_output(stdout: str, stderr: str) -> Tuple[Optional[bool], Optio
     if solve_time is not None:
         solve_time = round(solve_time, 5)
 
-    return success, solve_time, iterations, communication, "\n".join(stdout_lines), "\n".join(stderr_lines)
+    return success, solve_time, iterations, communication, cp_initial, cp_ant, cp_calls, comm_time, "\n".join(stdout_lines), "\n".join(stderr_lines)
 
 
 def write_csv(output_path: Path, rows: Sequence[dict]) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = ["alg", "puzzle_size", "f%", "ants", "subcolonies", "q0", "rho", "bve", "timeout", "success_rate", "time_mean", "time_std", "iter_mean", "with_comm", "without_comm"]
+    fieldnames = ["alg", "puzzle_size", "ants", "subcolonies", "q0", "rho", "bve", "timeout", "success_rate", "time_mean", "time_std", "iter_mean", "with_comm", "without_comm", "comm_time_mean", "comm_percentage", "cp_initial_mean", "cp_ant_mean", "cp_total_mean", "cp_percentage"]
     with output_path.open("w", newline="", encoding="utf-8") as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
@@ -260,7 +319,7 @@ def compute_summary(total: int, successes: int, times: Sequence[float]) -> Tuple
     return total, successes, round(avg_time, 5)
 
 
-def summarize_group(size_label: str, fixed_percentage: Optional[int], stats: dict, args: argparse.Namespace) -> dict:
+def summarize_group(size_label: str, stats: dict, args: argparse.Namespace) -> dict:
     total = stats.get("total", 0)
     if total == 0:
         return {}
@@ -271,23 +330,39 @@ def summarize_group(size_label: str, fixed_percentage: Optional[int], stats: dic
     iterations = stats.get("iterations", [])
     with_comm = stats.get("with_comm", 0)
     without_comm = stats.get("without_comm", 0)
+    cp_initial_list = stats.get("cp_initial", [])
+    cp_ant_list = stats.get("cp_ant", [])
+    cp_calls_list = stats.get("cp_calls", [])
+    comm_time_list = stats.get("comm_time", [])
+    
     success_rate = (successes / total) * 100.0 if total else 0.0
     average_time = round(sum(times) / len(times), 5) if times else 0.0
     time_std = round(statistics.pstdev(times), 5) if len(times) > 1 else 0.0
     average_iter = round(sum(iterations) / len(iterations), 2) if iterations else 0.0
+    
+    avg_comm_time = round(sum(comm_time_list) / len(comm_time_list), 6) if comm_time_list else 0.0
+    avg_comm_pct = round((avg_comm_time / average_time * 100), 2) if average_time > 0 else 0.0
 
-    label = size_label
-    if fixed_percentage is not None:
-        label = f"{label} @ {fixed_percentage}% fixed"
+    # Calculate CP timing statistics (alg 0/1 only)
+    avg_cp_initial = round(sum(cp_initial_list) / len(cp_initial_list), 6) if cp_initial_list else 0.0
+    avg_cp_ant = round(sum(cp_ant_list) / len(cp_ant_list), 6) if cp_ant_list else 0.0
+    avg_cp_total = avg_cp_initial + avg_cp_ant
+    avg_cp_percentage = round((avg_cp_total / average_time * 100), 2) if average_time > 0 else 0.0
 
     # Build summary message
-    summary_msg = f"Summary {label}: success={successes}, fail={fails}, success_rate={success_rate:.2f}%, avg_time={average_time:.5f}s"
+    summary_msg = f"Summary {size_label}: success={successes}, fail={fails}, success_rate={success_rate:.2f}%, avg_time={average_time:.5f}s"
     
     if iterations:
         summary_msg += f", avg_iter={average_iter:.2f}"
     
     if args.alg == 2 and (with_comm > 0 or without_comm > 0):
         summary_msg += f", comm={with_comm}/{with_comm + without_comm}"
+    
+    # Add timing details to summary
+    if args.alg == 2 and comm_time_list:
+        summary_msg += f", COMM: {avg_comm_time:.6f}s ({avg_comm_pct:.1f}%)"
+    elif cp_initial_list and cp_ant_list:
+        summary_msg += f", CP: {avg_cp_total:.6f}s ({avg_cp_percentage:.1f}%)"
     
     print(summary_msg)
     sys.stdout.flush()  # Force immediate output to prevent timing issues
@@ -298,23 +373,33 @@ def summarize_group(size_label: str, fixed_percentage: Optional[int], stats: dic
     # Get actual subcolonies count (default is 4)
     actual_subcolonies = args.subcolonies if args.subcolonies is not None else 4
 
+    timeout_value = stats.get("timeout")
     return {
         "alg": args.alg,
         "puzzle_size": size_label,
-        "f%": fixed_percentage if fixed_percentage is not None else "",
         "ants": actual_ants,
         "subcolonies": actual_subcolonies,
         "q0": args.q0,
         "rho": args.rho,
         "bve": args.evap,
-        "timeout": args.timeout,
+        "timeout": timeout_value if timeout_value is not None else "",
         "success_rate": round(success_rate, 2),
         "time_mean": average_time,
         "time_std": time_std,
         "iter_mean": average_iter if (args.alg == 0 or args.alg == 2) else "",
         "with_comm": with_comm if args.alg == 2 else "",
         "without_comm": without_comm if args.alg == 2 else "",
+        "comm_time_mean": avg_comm_time if (args.alg == 2 and comm_time_list) else "",
+        "comm_percentage": avg_comm_pct if (args.alg == 2 and comm_time_list) else "",
+        "cp_initial_mean": avg_cp_initial if (args.alg != 2 and cp_initial_list) else "",
+        "cp_ant_mean": avg_cp_ant if (args.alg != 2 and cp_ant_list) else "",
+        "cp_total_mean": avg_cp_total if (args.alg != 2 and cp_initial_list and cp_ant_list) else "",
+        "cp_percentage": avg_cp_percentage if (args.alg != 2 and cp_initial_list and cp_ant_list) else "",
     }
+
+def build_chunk_output_path(base_output: Path, chunk_index: int) -> Path:
+    suffix = f"_part_{chunk_index}"
+    return base_output.with_name(f"{base_output.stem}{suffix}{base_output.suffix}")
 
 
 def main() -> int:
@@ -323,7 +408,7 @@ def main() -> int:
     parser.add_argument("--solver", default=None, help="Path to the solver executable (default: auto-detect)")
     parser.add_argument("--output", default="results/general_metrics.csv", help="Destination CSV file for metrics.")
     parser.add_argument("--alg", type=int, default=0, help="Solver algorithm (0=ACS, 1=backtracking).")
-    parser.add_argument("--timeout", type=float, default=120.0, help="Timeout per puzzle in seconds (default: 120).")
+    parser.add_argument("--timeout", type=float, default=None, help="Timeout per puzzle in seconds (default: auto by size).")
     parser.add_argument("--ants", type=int, default=None, help="Override number of ants (ACS only).")
     parser.add_argument("--subcolonies", type=int, default=None, help="Number of sub-colonies for parallel ACS (alg=2, default: 4).")
     parser.add_argument("--q0", type=float, default=0.9, help="Override ACS q0 parameter.")
@@ -331,7 +416,6 @@ def main() -> int:
     parser.add_argument("--evap", type=float, default=0.005, help="Override ACS evaporation parameter.")
     parser.add_argument("--limit", type=int, default=None, help="Optional cap on number of instances to process.")
     parser.add_argument("--puzzle-size", dest="puzzle_sizes", nargs="+", choices=["9x9", "16x16", "25x25", "36x36"], help="Filter by puzzle size(s), e.g. --puzzle-size 25x25.")
-    parser.add_argument("--fixed-percentage", dest="fixed_percentages", type=int, nargs="+", help="Filter by fixed-cell percentage(s), e.g. --fixed-percentage 40.")
     parser.add_argument("--solver-timeout", type=float, default=None, help="Wall-clock timeout applied to each solver invocation.")
     parser.add_argument("--solver-verbose", action="store_true", help="Pass --verbose to the solver binary.")
     parser.add_argument("--verbose", action="store_true", default=True, help="Print per-instance progress to the console (default: True).")
@@ -361,27 +445,19 @@ def main() -> int:
             return 1
         instances_root_display = instances_root
     else:
-        # Default: run both general and logic-solvable instances
+        # Default: run all instances/* folders
         try:
             instance_files = list(iter_all_instance_files(repo_root))
         except FileNotFoundError as exc:
             print(exc, file=sys.stderr)
             return 1
-        instances_root_display = repo_root / "instances" / "(general + logic-solvable)"
+        instances_root_display = repo_root / "instances" / "*"
 
     metadata_list = sort_instance_metadata([parse_metadata(path) for path in instance_files])
 
     if args.puzzle_sizes:
         allowed_sizes = set(args.puzzle_sizes)
         metadata_list = [meta for meta in metadata_list if meta.size_label in allowed_sizes]
-
-    if args.fixed_percentages:
-        allowed_fixed = set(args.fixed_percentages)
-        metadata_list = [
-            meta
-            for meta in metadata_list
-            if meta.fixed_percentage is not None and meta.fixed_percentage in allowed_fixed
-        ]
 
     if not metadata_list:
         print("No instances match the specified filters.", file=sys.stderr)
@@ -392,8 +468,8 @@ def main() -> int:
 
     group_rows: List[dict] = []
     total_instances = len(metadata_list)
-    current_group_key: Optional[Tuple[str, Optional[int]]] = None
-    group_stats = {"total": 0, "successes": 0, "fails": 0, "times": [], "iterations": [], "with_comm": 0, "without_comm": 0}
+    current_group_key: Optional[str] = None
+    group_stats = {"total": 0, "successes": 0, "fails": 0, "times": [], "iterations": [], "with_comm": 0, "without_comm": 0, "comm_time": [], "cp_initial": [], "cp_ant": [], "cp_calls": [], "timeout": None}
     overall_total = 0
     overall_successes = 0
     overall_times: List[float] = []
@@ -401,54 +477,95 @@ def main() -> int:
     overall_with_comm = 0
     overall_without_comm = 0
 
+    # Chunked CSV output (every 10 instances)
+    chunk_size = 10
+    chunk_index = 1
+    chunk_count = 0
+    chunk_rows: List[dict] = []
+    chunk_current_group_key: Optional[str] = None
+    chunk_group_stats = {"total": 0, "successes": 0, "fails": 0, "times": [], "iterations": [], "with_comm": 0, "without_comm": 0, "comm_time": [], "cp_initial": [], "cp_ant": [], "cp_calls": [], "timeout": None}
+
     for idx, metadata in enumerate(metadata_list, start=1):
-        # Determine if this is a logic-solvable instance (no fixed_percentage)
-        is_logic_solvable = metadata.fixed_percentage is None
-        num_runs = 100 if is_logic_solvable else 1
+        num_runs = 100
         
         # Group key for statistics
-        group_key = (metadata.size_label, metadata.fixed_percentage)
+        group_key = metadata.size_label
         if current_group_key is None:
             current_group_key = group_key
         elif group_key != current_group_key:
-            row = summarize_group(current_group_key[0], current_group_key[1], group_stats, args)
+            row = summarize_group(current_group_key, group_stats, args)
             if row:
                 group_rows.append(row)
-            group_stats = {"total": 0, "successes": 0, "fails": 0, "times": [], "iterations": [], "with_comm": 0, "without_comm": 0}
+            group_stats = {"total": 0, "successes": 0, "fails": 0, "times": [], "iterations": [], "with_comm": 0, "without_comm": 0, "comm_time": [], "cp_initial": [], "cp_ant": [], "cp_calls": [], "timeout": None}
             current_group_key = group_key
+
+        # Maintain chunk-level grouping
+        if chunk_current_group_key is None:
+            chunk_current_group_key = group_key
+        elif group_key != chunk_current_group_key:
+            chunk_row = summarize_group(chunk_current_group_key, chunk_group_stats, args)
+            if chunk_row:
+                chunk_rows.append(chunk_row)
+            chunk_group_stats = {"total": 0, "successes": 0, "fails": 0, "times": [], "iterations": [], "with_comm": 0, "without_comm": 0, "comm_time": [], "cp_initial": [], "cp_ant": [], "cp_calls": [], "timeout": None}
+            chunk_current_group_key = group_key
         
+        instance_timeout = resolve_instance_timeout(metadata.size_label, args)
+        group_stats["timeout"] = instance_timeout
+        chunk_group_stats["timeout"] = instance_timeout
+
         # Run the puzzle num_runs times (100 for logic-solvable, 1 for general)
         for run_num in range(1, num_runs + 1):
-            cmd = build_solver_command(solver_path, metadata.path, repo_root, args)
+            cmd = build_solver_command(solver_path, metadata.path, repo_root, args, instance_timeout)
             # Show progress for algorithm 2 when verbose is enabled
             show_progress = args.verbose and args.alg == 2
             result = run_solver(cmd, repo_root, timeout=args.solver_timeout, show_progress=show_progress)
 
-            success, solve_time, iterations, communication, stdout_text, stderr_text = parse_solver_output(result.stdout, result.stderr if result.stderr else "")
+            success, solve_time, iterations, communication, cp_initial, cp_ant, cp_calls, comm_time, stdout_text, stderr_text = parse_solver_output(result.stdout, result.stderr if result.stderr else "")
 
             if success is False and (solve_time is None or solve_time == 0.0):
-                solve_time = round(float(args.timeout), 5)
+                solve_time = round(float(instance_timeout), 5)
 
             if args.verbose:
                 status = "OK" if success else "FAIL" if success is not None else "UNKNOWN"
-                if is_logic_solvable:
-                    # For logic-solvable, show run number
-                    if solve_time is not None:
+                
+                # Build detailed timing string
+                timing_str = ""
+                if solve_time is not None:
+                    timing_str = f"{solve_time:.5f}s"
+                    
+                    # Add detailed CP breakdown if available
+                    if args.alg == 2 and comm_time is not None:
+                        comm_pct = (comm_time / solve_time * 100) if solve_time > 0 else 0.0
+                        timing_str = f"COMM={comm_time:.6f}s ({comm_pct:.2f}%)"
                         if iterations is not None:
-                            print(f"[{metadata.size_label} run {run_num}/{num_runs}] {metadata.relative_path} -> {status} ({solve_time:.5f}s, {iterations} iter)")
-                        else:
-                            print(f"[{metadata.size_label} run {run_num}/{num_runs}] {metadata.relative_path} -> {status} ({solve_time:.5f}s)")
-                    else:
-                        print(f"[{metadata.size_label} run {run_num}/{num_runs}] {metadata.relative_path} -> {status}")
+                            timing_str += f", {iterations} iter"
+                    elif cp_initial is not None and cp_ant is not None and iterations is not None:
+                        total_cp = cp_initial + cp_ant
+                        total_time = solve_time + cp_initial
+                        total_aco = solve_time  # ACO phase (includes ant CP)
+                        aco_only = max(0.0, total_aco - cp_ant)  # Pure ACO time (excluding CP)
+                        
+                        # Calculate percentages
+                        cp_init_pct = (cp_initial / total_time * 100) if total_time > 0 else 0
+                        cp_ant_pct = (cp_ant / total_aco * 100) if total_aco > 0 else 0
+                        aco_only_pct = (aco_only / total_aco * 100) if total_aco > 0 else 0
+                        total_cp_pct = (total_cp / total_time * 100) if total_time > 0 else 0
+                        aco_total_pct = (total_aco / total_time * 100) if total_time > 0 else 0
+                        
+                        # Format with percentages (using 2 decimal places to show small values like CP_init)
+                        timing_str = (f"CP_init={cp_initial:.6f}s ({cp_init_pct:.2f}%), "
+                                    f"CP_ant={cp_ant:.6f}s ({cp_ant_pct:.2f}%), "
+                                    f"ACO_only={aco_only:.5f}s ({aco_only_pct:.2f}%), "
+                                    f"ACO_total={total_aco:.5f}s ({aco_total_pct:.2f}%), "
+                                    f"total_CP={total_cp:.6f}s ({total_cp_pct:.2f}%), "
+                                    f"Total={total_time:.5f}s, {iterations} iter")
+                    elif iterations is not None:
+                        timing_str += f", {iterations} iter"
+                
+                if timing_str:
+                    print(f"[run {run_num}/{num_runs}] {metadata.relative_path} -> {status} ({timing_str})")
                 else:
-                    # For general instances, show normal format
-                    if solve_time is not None:
-                        if iterations is not None:
-                            print(f"[{idx}/{total_instances}] {metadata.relative_path} -> {status} ({solve_time:.5f}s, {iterations} iter)")
-                        else:
-                            print(f"[{idx}/{total_instances}] {metadata.relative_path} -> {status} ({solve_time:.5f}s)")
-                    else:
-                        print(f"[{idx}/{total_instances}] {metadata.relative_path} -> {status}")
+                    print(f"[run {run_num}/{num_runs}] {metadata.relative_path} -> {status}")
 
             group_stats["total"] += 1
             if success:
@@ -457,7 +574,8 @@ def main() -> int:
                 group_stats["fails"] += 1
             # Only include times and iterations from successful runs in statistics
             if success and solve_time is not None:
-                group_stats["times"].append(solve_time)
+                time_for_stats = solve_time + cp_initial if cp_initial is not None else solve_time
+                group_stats["times"].append(time_for_stats)
                 if iterations is not None:
                     group_stats["iterations"].append(iterations)
                 if communication is not None:
@@ -465,13 +583,50 @@ def main() -> int:
                         group_stats["with_comm"] += 1
                     else:
                         group_stats["without_comm"] += 1
+                if args.alg == 2 and comm_time is not None:
+                    group_stats["comm_time"].append(comm_time)
+                elif args.alg != 2:
+                    # Track CP timing statistics
+                    if cp_initial is not None:
+                        group_stats["cp_initial"].append(cp_initial)
+                    if cp_ant is not None:
+                        group_stats["cp_ant"].append(cp_ant)
+                    if cp_calls is not None:
+                        group_stats["cp_calls"].append(cp_calls)
+
+            # Chunk stats (same as group stats, limited to this chunk)
+            chunk_group_stats["total"] += 1
+            if success:
+                chunk_group_stats["successes"] += 1
+            else:
+                chunk_group_stats["fails"] += 1
+            if success and solve_time is not None:
+                time_for_stats = solve_time + cp_initial if cp_initial is not None else solve_time
+                chunk_group_stats["times"].append(time_for_stats)
+                if iterations is not None:
+                    chunk_group_stats["iterations"].append(iterations)
+                if communication is not None:
+                    if communication:
+                        chunk_group_stats["with_comm"] += 1
+                    else:
+                        chunk_group_stats["without_comm"] += 1
+                if args.alg == 2 and comm_time is not None:
+                    chunk_group_stats["comm_time"].append(comm_time)
+                elif args.alg != 2:
+                    if cp_initial is not None:
+                        chunk_group_stats["cp_initial"].append(cp_initial)
+                    if cp_ant is not None:
+                        chunk_group_stats["cp_ant"].append(cp_ant)
+                    if cp_calls is not None:
+                        chunk_group_stats["cp_calls"].append(cp_calls)
 
             overall_total += 1
             if success:
                 overall_successes += 1
             # Only include times and iterations from successful runs in statistics
             if success and solve_time is not None:
-                overall_times.append(solve_time)
+                time_for_stats = solve_time + cp_initial if cp_initial is not None else solve_time
+                overall_times.append(time_for_stats)
                 if iterations is not None:
                     overall_iterations.append(iterations)
                 if communication is not None:
@@ -480,9 +635,25 @@ def main() -> int:
                     else:
                         overall_without_comm += 1
 
+        # After finishing one instance (all runs), maybe write chunk CSV
+        chunk_count += 1
+        if chunk_count == chunk_size or idx == total_instances:
+            if chunk_current_group_key is not None:
+                chunk_row = summarize_group(chunk_current_group_key, chunk_group_stats, args)
+                if chunk_row:
+                    chunk_rows.append(chunk_row)
+            output_path = (repo_root / args.output).resolve()
+            chunk_output_path = build_chunk_output_path(output_path, chunk_index)
+            write_csv(chunk_output_path, chunk_rows)
+            chunk_index += 1
+            chunk_count = 0
+            chunk_rows = []
+            chunk_current_group_key = None
+            chunk_group_stats = {"total": 0, "successes": 0, "fails": 0, "times": [], "iterations": [], "with_comm": 0, "without_comm": 0, "comm_time": [], "cp_initial": [], "cp_ant": [], "cp_calls": [], "timeout": None}
+
     output_path = (repo_root / args.output).resolve()
     if current_group_key is not None:
-        row = summarize_group(current_group_key[0], current_group_key[1], group_stats, args)
+        row = summarize_group(current_group_key, group_stats, args)
         if row:
             group_rows.append(row)
 
@@ -509,7 +680,10 @@ def main() -> int:
     print(f"q0              : {args.q0}")
     print(f"rho             : {args.rho}")
     print(f"bve             : {args.evap}")
-    print(f"Timeout         : {args.timeout}s")
+    if args.timeout is None:
+        print("Timeout         : auto (9x9=5, 16x16=20, 25x25=120)")
+    else:
+        print(f"Timeout         : {args.timeout}s")
     print(f"Total puzzles   : {total}")
     print(f"Succeeded       : {successes}")
     print(f"Failed          : {failures}")
