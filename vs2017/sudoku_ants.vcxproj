@@ -117,6 +117,7 @@
   <ItemGroup>
     <ClCompile Include="..\src\backtracksearch.cpp" />
     <ClCompile Include="..\src\board.cpp" />
+    <ClCompile Include="..\src\constraintpropagation.cpp" />
     <ClCompile Include="..\src\parallelsudokuantsystem.cpp" />
     <ClCompile Include="..\src\solvermain.cpp" />
     <ClCompile Include="..\src\sudokuant.cpp" />
@@ -127,6 +128,7 @@
     <ClInclude Include="..\src\arguments.h" />
     <ClInclude Include="..\src\backtracksearch.h" />
     <ClInclude Include="..\src\board.h" />
+    <ClInclude Include="..\src\constraintpropagation.h" />
     <ClInclude Include="..\src\parallelsudokuantsystem.h" />
     <ClInclude Include="..\src\sudokuant.h" />
     <ClInclude Include="..\src\sudokuantsystem.h" />
