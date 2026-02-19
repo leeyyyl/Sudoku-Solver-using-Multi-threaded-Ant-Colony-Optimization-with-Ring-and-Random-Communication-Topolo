@@ -62,6 +62,87 @@ void EndInitialCP()
 }
 
 /*******************************************************************************
+ * SetCellAndPropagate
+ * 
+ * Sets a cell to a specific value and propagates the constraints to all
+ * cells in the same row, column, and box.
+ * 
+ * This is the main function used during puzzle initialization.
+ * 
+ * NOTE: Timing is done in Rule1/Rule2 functions to avoid double-counting
+ * due to recursive calls.
+ ******************************************************************************/
+void SetCellAndPropagate(Board& board, int cellIndex, const ValueSet& value)
+{
+	// Skip if cell is already fixed
+	if (board.GetCell(cellIndex).Fixed())
+		return;
+	
+	// Set the cell directly
+	board.SetCellDirect(cellIndex, value);
+	board.IncrementFixedCells();
+	
+	// Count this as a CP call (but timing is done in Rule functions)
+	if (!g_inInitialCP)
+		g_cpCallCount.fetch_add(1);
+	
+	// Propagate constraints to all cells in the same row, column, and box
+	int numUnits = board.GetNumUnits();
+	int iBox = board.BoxForCell(cellIndex);
+	int iCol = board.ColForCell(cellIndex);
+	int iRow = board.RowForCell(cellIndex);
+	
+	for (int j = 0; j < numUnits; j++)
+	{
+		int k;
+		
+		// Propagate to box cells
+		k = board.BoxCell(iBox, j);
+		if (k != cellIndex)
+			PropagateConstraints(board, k);
+		
+		// Propagate to column cells
+		k = board.ColCell(iCol, j);
+		if (k != cellIndex)
+			PropagateConstraints(board, k);
+		
+		// Propagate to row cells
+		k = board.RowCell(iRow, j);
+		if (k != cellIndex)
+			PropagateConstraints(board, k);
+	}
+}
+
+/*******************************************************************************
+ * PropagateConstraints
+ * 
+ * Main entry point for constraint propagation. Applies both Rule1 (elimination)
+ * and Rule2 (hidden single) to the specified cell.
+ * 
+ * This function is called after a cell is set to propagate the constraints
+ * to neighboring cells.
+ ******************************************************************************/
+void PropagateConstraints(Board& board, int cellIndex)
+{
+	const ValueSet& cell = board.GetCell(cellIndex);
+	
+	// Skip if cell is already fixed or empty
+	if (cell.Empty() || cell.Fixed())
+		return;
+	
+	// Apply Rule 1: Elimination
+	if (Rule1_Elimination(board, cellIndex))
+		return; // Cell was fixed by Rule1, done
+	
+	// Apply Rule 2: Hidden Single
+	Rule2_HiddenSingle(board, cellIndex);
+	
+	// Check if cell became infeasible (no possible values)
+	if (board.GetCell(cellIndex).Empty())
+		board.IncrementInfeasible();
+}
+
+/*******************************************************************************
  * Rule1_Elimination
  * 
  * Implementation of the elimination rule:
@@ -227,85 +308,4 @@ bool Rule2_HiddenSingle(Board& board, int cellIndex)
 	}
 	
 	return false;
-}
-
-/*******************************************************************************
- * PropagateConstraints
- * 
- * Main entry point for constraint propagation. Applies both Rule1 (elimination)
- * and Rule2 (hidden single) to the specified cell.
- * 
- * This function is called after a cell is set to propagate the constraints
- * to neighboring cells.
- ******************************************************************************/
-void PropagateConstraints(Board& board, int cellIndex)
-{
-	const ValueSet& cell = board.GetCell(cellIndex);
-	
-	// Skip if cell is already fixed or empty
-	if (cell.Empty() || cell.Fixed())
-		return;
-	
-	// Apply Rule 1: Elimination
-	if (Rule1_Elimination(board, cellIndex))
-		return; // Cell was fixed by Rule1, done
-	
-	// Apply Rule 2: Hidden Single
-	Rule2_HiddenSingle(board, cellIndex);
-	
-	// Check if cell became infeasible (no possible values)
-	if (board.GetCell(cellIndex).Empty())
-		board.IncrementInfeasible();
-}
-
-/*******************************************************************************
- * SetCellAndPropagate
- * 
- * Sets a cell to a specific value and propagates the constraints to all
- * cells in the same row, column, and box.
- * 
- * This is the main function used during puzzle initialization.
- * 
- * NOTE: Timing is done in Rule1/Rule2 functions to avoid double-counting
- * due to recursive calls.
- ******************************************************************************/
-void SetCellAndPropagate(Board& board, int cellIndex, const ValueSet& value)
-{
-	// Skip if cell is already fixed
-	if (board.GetCell(cellIndex).Fixed())
-		return;
-	
-	// Set the cell directly
-	board.SetCellDirect(cellIndex, value);
-	board.IncrementFixedCells();
-	
-	// Count this as a CP call (but timing is done in Rule functions)
-	if (!g_inInitialCP)
-		g_cpCallCount.fetch_add(1);
-	
-	// Propagate constraints to all cells in the same row, column, and box
-	int numUnits = board.GetNumUnits();
-	int iBox = board.BoxForCell(cellIndex);
-	int iCol = board.ColForCell(cellIndex);
-	int iRow = board.RowForCell(cellIndex);
-	
-	for (int j = 0; j < numUnits; j++)
-	{
-		int k;
-		
-		// Propagate to box cells
-		k = board.BoxCell(iBox, j);
-		if (k != cellIndex)
-			PropagateConstraints(board, k);
-		
-		// Propagate to column cells
-		k = board.ColCell(iCol, j);
-		if (k != cellIndex)
-			PropagateConstraints(board, k);
-		
-		// Propagate to row cells
-		k = board.RowCell(iRow, j);
-		if (k != cellIndex)
-			PropagateConstraints(board, k);
-	}
 }

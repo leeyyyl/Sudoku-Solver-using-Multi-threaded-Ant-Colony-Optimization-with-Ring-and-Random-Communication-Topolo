@@ -18,6 +18,12 @@ from pathlib import Path
 from subprocess import CompletedProcess, run, PIPE
 from typing import Iterable, List, Optional, Sequence, Tuple
 
+REPO_ROOT_FOR_IMPORT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT_FOR_IMPORT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT_FOR_IMPORT))
+
+from web.solver_args import build_solver_args
+
 
 @dataclass(frozen=True)
 class InstanceMetadata:
@@ -86,24 +92,6 @@ def natural_sort_key(path: Path) -> list:
         else:
             parts.append(part)
     return parts
-
-
-def infer_size_label(name: str) -> Optional[str]:
-    match = re.search(r"(9x9|16x16|25x25|36x36)", name, re.IGNORECASE)
-    return match.group(1).lower() if match else None
-
-
-def resolve_instance_timeout(instance_name: str, args: argparse.Namespace) -> float:
-    if args.timeout is not None:
-        return float(args.timeout)
-    size = infer_size_label(instance_name)
-    if size == "9x9":
-        return 5.0
-    if size == "16x16":
-        return 20.0
-    if size == "25x25":
-        return 120.0
-    return 120.0
 
 
 def iter_instance_files(instances_root: Path) -> Iterable[Path]:
@@ -175,25 +163,21 @@ def build_solver_command(
     instance_path: Path,
     repo_root: Path,
     args: argparse.Namespace,
-    timeout_value: float,
 ) -> List[str]:
     file_arg = format_instance_argument(instance_path, repo_root)
-    cmd: List[str] = [str(solver_path), "--file", file_arg, "--alg", str(args.alg), "--timeout", str(timeout_value)]
-
-    if args.ants is not None:
-        cmd.extend(("--ants", str(args.ants)))
-    if args.subcolonies is not None:
-        cmd.extend(("--subcolonies", str(args.subcolonies)))
-    if args.q0 is not None:
-        cmd.extend(("--q0", str(args.q0)))
-    if args.rho is not None:
-        cmd.extend(("--rho", str(args.rho)))
-    if args.evap is not None:
-        cmd.extend(("--evap", str(args.evap)))
-    # Always add verbose for algorithms 0 and 2 to get iteration count
-    if args.alg == 0 or args.alg == 2 or args.solver_verbose:
-        cmd.append("--verbose")
-    return cmd
+    return build_solver_args(
+        str(solver_path),
+        file_path=file_arg,
+        alg=args.alg,
+        subcolonies=args.subcolonies,
+        ants=args.ants,
+        timeout=args.timeout,
+        q0=args.q0,
+        rho=args.rho,
+        xi=args.xi,
+        evap=args.evap,
+        verbose=(args.alg == 0 or args.alg == 2 or args.solver_verbose),
+    )
 
 
 def run_solver(cmd: Sequence[str], cwd: Path, timeout: Optional[float], show_progress: bool = False) -> CompletedProcess:
@@ -307,7 +291,7 @@ def parse_solver_output(stdout: str, stderr: str) -> Tuple[Optional[bool], Optio
 
 def write_csv(output_path: Path, rows: Sequence[dict]) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = ["alg", "puzzle_size", "ants", "subcolonies", "q0", "rho", "bve", "timeout", "success_rate", "time_mean", "time_std", "iter_mean", "with_comm", "without_comm", "comm_time_mean", "comm_percentage", "cp_initial_mean", "cp_ant_mean", "cp_total_mean", "cp_percentage"]
+    fieldnames = ["alg", "puzzle_size", "ants", "subcolonies", "q0", "rho", "xi", "bve", "timeout", "success_rate", "time_mean", "time_std", "iter_mean", "with_comm", "without_comm", "comm_time_mean", "comm_percentage", "cp_initial_mean", "cp_ant_mean", "cp_total_mean", "cp_percentage"]
     with output_path.open("w", newline="", encoding="utf-8") as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
@@ -319,7 +303,7 @@ def compute_summary(total: int, successes: int, times: Sequence[float]) -> Tuple
     return total, successes, round(avg_time, 5)
 
 
-def summarize_group(size_label: str, stats: dict, args: argparse.Namespace) -> dict:
+def summarize_group(size_label: str, stats: dict, args: argparse.Namespace, print_summary: bool = True) -> dict:
     total = stats.get("total", 0)
     if total == 0:
         return {}
@@ -364,8 +348,9 @@ def summarize_group(size_label: str, stats: dict, args: argparse.Namespace) -> d
     elif cp_initial_list and cp_ant_list:
         summary_msg += f", CP: {avg_cp_total:.6f}s ({avg_cp_percentage:.1f}%)"
     
-    print(summary_msg)
-    sys.stdout.flush()  # Force immediate output to prevent timing issues
+    if print_summary:
+        print(summary_msg)
+        sys.stdout.flush()  # Force immediate output to prevent timing issues
 
     # Get actual ant count (default is 10)
     actual_ants = args.ants if args.ants is not None else 10
@@ -373,7 +358,7 @@ def summarize_group(size_label: str, stats: dict, args: argparse.Namespace) -> d
     # Get actual subcolonies count (default is 4)
     actual_subcolonies = args.subcolonies if args.subcolonies is not None else 4
 
-    timeout_value = stats.get("timeout")
+    timeout_value = stats.get("timeout", "auto")
     return {
         "alg": args.alg,
         "puzzle_size": size_label,
@@ -381,8 +366,9 @@ def summarize_group(size_label: str, stats: dict, args: argparse.Namespace) -> d
         "subcolonies": actual_subcolonies,
         "q0": args.q0,
         "rho": args.rho,
+        "xi": args.xi,
         "bve": args.evap,
-        "timeout": timeout_value if timeout_value is not None else "",
+        "timeout": timeout_value,
         "success_rate": round(success_rate, 2),
         "time_mean": average_time,
         "time_std": time_std,
@@ -413,6 +399,7 @@ def main() -> int:
     parser.add_argument("--subcolonies", type=int, default=None, help="Number of sub-colonies for parallel ACS (alg=2, default: 4).")
     parser.add_argument("--q0", type=float, default=0.9, help="Override ACS q0 parameter.")
     parser.add_argument("--rho", type=float, default=0.9, help="Override ACS rho parameter.")
+    parser.add_argument("--xi", type=float, default=0.1, help="Override ACS local pheromone update parameter.")
     parser.add_argument("--evap", type=float, default=0.005, help="Override ACS evaporation parameter.")
     parser.add_argument("--limit", type=int, default=None, help="Optional cap on number of instances to process.")
     parser.add_argument("--puzzle-size", dest="puzzle_sizes", nargs="+", choices=["9x9", "16x16", "25x25", "36x36"], help="Filter by puzzle size(s), e.g. --puzzle-size 25x25.")
@@ -469,7 +456,8 @@ def main() -> int:
     group_rows: List[dict] = []
     total_instances = len(metadata_list)
     current_group_key: Optional[str] = None
-    group_stats = {"total": 0, "successes": 0, "fails": 0, "times": [], "iterations": [], "with_comm": 0, "without_comm": 0, "comm_time": [], "cp_initial": [], "cp_ant": [], "cp_calls": [], "timeout": None}
+    timeout_label = args.timeout if args.timeout is not None else "auto"
+    group_stats = {"total": 0, "successes": 0, "fails": 0, "times": [], "iterations": [], "with_comm": 0, "without_comm": 0, "comm_time": [], "cp_initial": [], "cp_ant": [], "cp_calls": [], "timeout": timeout_label}
     overall_total = 0
     overall_successes = 0
     overall_times: List[float] = []
@@ -483,7 +471,7 @@ def main() -> int:
     chunk_count = 0
     chunk_rows: List[dict] = []
     chunk_current_group_key: Optional[str] = None
-    chunk_group_stats = {"total": 0, "successes": 0, "fails": 0, "times": [], "iterations": [], "with_comm": 0, "without_comm": 0, "comm_time": [], "cp_initial": [], "cp_ant": [], "cp_calls": [], "timeout": None}
+    chunk_group_stats = {"total": 0, "successes": 0, "fails": 0, "times": [], "iterations": [], "with_comm": 0, "without_comm": 0, "comm_time": [], "cp_initial": [], "cp_ant": [], "cp_calls": [], "timeout": timeout_label}
 
     for idx, metadata in enumerate(metadata_list, start=1):
         num_runs = 100
@@ -496,34 +484,30 @@ def main() -> int:
             row = summarize_group(current_group_key, group_stats, args)
             if row:
                 group_rows.append(row)
-            group_stats = {"total": 0, "successes": 0, "fails": 0, "times": [], "iterations": [], "with_comm": 0, "without_comm": 0, "comm_time": [], "cp_initial": [], "cp_ant": [], "cp_calls": [], "timeout": None}
+            group_stats = {"total": 0, "successes": 0, "fails": 0, "times": [], "iterations": [], "with_comm": 0, "without_comm": 0, "comm_time": [], "cp_initial": [], "cp_ant": [], "cp_calls": [], "timeout": timeout_label}
             current_group_key = group_key
 
         # Maintain chunk-level grouping
         if chunk_current_group_key is None:
             chunk_current_group_key = group_key
         elif group_key != chunk_current_group_key:
-            chunk_row = summarize_group(chunk_current_group_key, chunk_group_stats, args)
+            chunk_row = summarize_group(chunk_current_group_key, chunk_group_stats, args, print_summary=False)
             if chunk_row:
                 chunk_rows.append(chunk_row)
-            chunk_group_stats = {"total": 0, "successes": 0, "fails": 0, "times": [], "iterations": [], "with_comm": 0, "without_comm": 0, "comm_time": [], "cp_initial": [], "cp_ant": [], "cp_calls": [], "timeout": None}
+            chunk_group_stats = {"total": 0, "successes": 0, "fails": 0, "times": [], "iterations": [], "with_comm": 0, "without_comm": 0, "comm_time": [], "cp_initial": [], "cp_ant": [], "cp_calls": [], "timeout": timeout_label}
             chunk_current_group_key = group_key
-        
-        instance_timeout = resolve_instance_timeout(metadata.size_label, args)
-        group_stats["timeout"] = instance_timeout
-        chunk_group_stats["timeout"] = instance_timeout
 
         # Run the puzzle num_runs times (100 for logic-solvable, 1 for general)
         for run_num in range(1, num_runs + 1):
-            cmd = build_solver_command(solver_path, metadata.path, repo_root, args, instance_timeout)
+            cmd = build_solver_command(solver_path, metadata.path, repo_root, args)
             # Show progress for algorithm 2 when verbose is enabled
             show_progress = args.verbose and args.alg == 2
             result = run_solver(cmd, repo_root, timeout=args.solver_timeout, show_progress=show_progress)
 
             success, solve_time, iterations, communication, cp_initial, cp_ant, cp_calls, comm_time, stdout_text, stderr_text = parse_solver_output(result.stdout, result.stderr if result.stderr else "")
 
-            if success is False and (solve_time is None or solve_time == 0.0):
-                solve_time = round(float(instance_timeout), 5)
+            if args.timeout is not None and success is False and (solve_time is None or solve_time == 0.0):
+                solve_time = round(float(args.timeout), 5)
 
             if args.verbose:
                 status = "OK" if success else "FAIL" if success is not None else "UNKNOWN"
@@ -639,7 +623,7 @@ def main() -> int:
         chunk_count += 1
         if chunk_count == chunk_size or idx == total_instances:
             if chunk_current_group_key is not None:
-                chunk_row = summarize_group(chunk_current_group_key, chunk_group_stats, args)
+                chunk_row = summarize_group(chunk_current_group_key, chunk_group_stats, args, print_summary=False)
                 if chunk_row:
                     chunk_rows.append(chunk_row)
             output_path = (repo_root / args.output).resolve()
@@ -649,7 +633,7 @@ def main() -> int:
             chunk_count = 0
             chunk_rows = []
             chunk_current_group_key = None
-            chunk_group_stats = {"total": 0, "successes": 0, "fails": 0, "times": [], "iterations": [], "with_comm": 0, "without_comm": 0, "comm_time": [], "cp_initial": [], "cp_ant": [], "cp_calls": [], "timeout": None}
+            chunk_group_stats = {"total": 0, "successes": 0, "fails": 0, "times": [], "iterations": [], "with_comm": 0, "without_comm": 0, "comm_time": [], "cp_initial": [], "cp_ant": [], "cp_calls": [], "timeout": timeout_label}
 
     output_path = (repo_root / args.output).resolve()
     if current_group_key is not None:
@@ -679,6 +663,7 @@ def main() -> int:
         print(f"Sub-colonies    : {actual_subcolonies}")
     print(f"q0              : {args.q0}")
     print(f"rho             : {args.rho}")
+    print(f"xi              : {args.xi}")
     print(f"bve             : {args.evap}")
     if args.timeout is None:
         print("Timeout         : auto (9x9=5, 16x16=20, 25x25=120)")

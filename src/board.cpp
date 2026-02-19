@@ -135,8 +135,6 @@ void Board::Copy(const Board& other)
 	if (cells == nullptr)
 		cells = new ValueSet[numCells];
 
-	int maxVal = numUnits;
-
 	for (int i = 0; i < numCells; i++)
 		cells[i] = other.GetCell(i);
 
@@ -153,7 +151,52 @@ Board::~Board()
 }
 
 // ============================================================================
-// SECTION 2: GEOMETRIC HELPER FUNCTIONS
+// SECTION 2: CORE QUERY/STATUS FUNCTIONS
+// Basic accessors used throughout solver and propagation logic
+// ============================================================================
+
+/*******************************************************************************
+ * GetCell - Access a cell's ValueSet
+ ******************************************************************************/
+const ValueSet& Board::GetCell(int i) const
+{
+	return cells[i];
+}
+
+/*******************************************************************************
+ * FixedCellCount - Number of cells with uniquely determined values
+ ******************************************************************************/
+int Board::FixedCellCount(void) const
+{
+	return numFixedCells;
+}
+
+/*******************************************************************************
+ * InfeasibleCellCount - Number of cells with no possible values (error state)
+ ******************************************************************************/
+int Board::InfeasibleCellCount(void) const
+{
+	return numInfeasible;
+}
+
+/*******************************************************************************
+ * CellCount - Total number of cells in the board
+ ******************************************************************************/
+int Board::CellCount(void) const
+{
+	return numCells;
+}
+
+/*******************************************************************************
+ * GetNumUnits - Number of units (rows, columns, or boxes)
+ ******************************************************************************/
+int Board::GetNumUnits(void) const
+{
+	return numUnits;
+}
+
+// ============================================================================
+// SECTION 3: GEOMETRIC HELPER FUNCTIONS
 // These functions convert between different cell indexing schemes
 // ============================================================================
 
@@ -206,50 +249,6 @@ int Board::ColForCell(int iCell) const
 int Board::BoxForCell(int iCell) const
 {
 	return order*(iCell / (order*order*order)) + ((iCell%(order*order))/order);
-}
-
-// ============================================================================
-// SECTION 3: BOARD QUERY/STATUS FUNCTIONS
-// ============================================================================
-
-/*******************************************************************************
- * GetCell - Access a cell's ValueSet
- ******************************************************************************/
-const ValueSet& Board::GetCell(int i) const
-{
-	return cells[i];
-}
-
-/*******************************************************************************
- * FixedCellCount - Number of cells with uniquely determined values
- ******************************************************************************/
-int Board::FixedCellCount(void) const
-{
-	return numFixedCells;
-}
-
-/*******************************************************************************
- * InfeasibleCellCount - Number of cells with no possible values (error state)
- ******************************************************************************/
-int Board::InfeasibleCellCount(void) const
-{
-	return numInfeasible;
-}
-
-/*******************************************************************************
- * CellCount - Total number of cells in the board
- ******************************************************************************/
-int Board::CellCount(void) const
-{
-	return numCells;
-}
-
-/*******************************************************************************
- * GetNumUnits - Number of units (rows, columns, or boxes)
- ******************************************************************************/
-int Board::GetNumUnits(void) const
-{
-	return numUnits;
 }
 
 // ============================================================================

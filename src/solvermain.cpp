@@ -31,26 +31,8 @@
 #include <sstream>
 using namespace std;
 
-static string JsonEscape(const string &input)
-{
-	ostringstream out;
-	for (char c : input)
-	{
-		switch (c)
-		{
-		case '\\': out << "\\\\"; break;
-		case '"': out << "\\\""; break;
-		case '\n': out << "\\n"; break;
-		case '\r': out << "\\r"; break;
-		case '\t': out << "\\t"; break;
-		default: out << c; break;
-		}
-	}
-	return out.str();
-}
-
 // ============================================================================
-// SECTION 1: PUZZLE FILE READER
+// SECTION 1: INPUT HELPERS
 // ============================================================================
 
 /*******************************************************************************
@@ -109,6 +91,79 @@ string ReadFile( string fileName )
 	}
 }
 
+/*******************************************************************************
+ * ResolveTimeoutSeconds
+ *
+ * Returns the effective timeout.
+ * - Uses user-provided timeout when positive.
+ * - Otherwise applies size-based defaults.
+ ******************************************************************************/
+static int ResolveTimeoutSeconds(const Board& board, int requestedTimeout)
+{
+	if (requestedTimeout > 0)
+		return requestedTimeout;
+
+	int cellCount = board.CellCount();
+	if (cellCount == 81)
+		return 5;
+	else if (cellCount == 256)
+		return 20;
+	else if (cellCount == 625)
+		return 120;
+	else
+		return 120;
+}
+
+/*******************************************************************************
+ * CreateSolver
+ *
+ * Factory for selecting and configuring the requested algorithm.
+ ******************************************************************************/
+static SudokuSolver* CreateSolver(
+	int algorithm,
+	const Board& board,
+	int nAnts,
+	int nSubColonies,
+	float q0,
+	float rho,
+	float xi,
+	float bestEvap)
+{
+	if (algorithm == 0)
+		return new SudokuAntSystem(nAnts, q0, rho, xi, 1.0f / board.CellCount(), bestEvap);
+	else if (algorithm == 1)
+		return new BacktrackSearch();
+	else if (algorithm == 2)
+		return new ParallelSudokuAntSystem(nSubColonies, nAnts, q0, rho, xi, 1.0f / board.CellCount(), bestEvap);
+
+	cerr << "Invalid algorithm: " << algorithm
+		 << ". Use 0 (single-thread ACS), 1 (backtracking), or 2 (parallel ACS)." << endl;
+	exit(1);
+}
+
+/*******************************************************************************
+ * JsonEscape
+ *
+ * Escapes text fields that are printed in JSON mode.
+ ******************************************************************************/
+static string JsonEscape(const string& input)
+{
+	ostringstream out;
+	for (char c : input)
+	{
+		switch (c)
+		{
+		case '\\': out << "\\\\"; break;
+		case '"': out << "\\\""; break;
+		case '\n': out << "\\n"; break;
+		case '\r': out << "\\r"; break;
+		case '\t': out << "\\t"; break;
+		default: out << c; break;
+		}
+	}
+	return out.str();
+}
+
 // ============================================================================
 // SECTION 2: MAIN FUNCTION
 // ============================================================================
@@ -125,9 +180,7 @@ string ReadFile( string fileName )
  ******************************************************************************/
 int main( int argc, char *argv[] )
 {
-	// ========================================================================
-	// SECTION 2.1: COMMAND-LINE ARGUMENT PARSING
-	// ========================================================================
+	// 2.1: Command-line parsing and puzzle loading
 	
 	Arguments a( argc, argv );
 	string puzzleString;
@@ -170,45 +223,22 @@ int main( int argc, char *argv[] )
 	int nSubColonies = a.GetArg("subcolonies", 4);
 	float q0 = a.GetArg("q0", 0.9f);
 	float rho = a.GetArg("rho", 0.9f);  // ACS rho (used in Alg 0 and Alg 2)
-	float evap = a.GetArg("evap", 0.005f);
-	bool blank = a.GetArg("blank", false);
+	float xi = a.GetArg("xi", 0.1f);  // ACS local pheromone update parameter
+	float bestEvap = a.GetArg("evap", 0.005f);
 	bool verbose = a.GetArg("verbose", 0);
 	bool showInitial = a.GetArg("showinitial", 0);
 	bool jsonOutput = a.GetArg("json", 0);
 	bool success;
 
-	if ( timeOutSecs <= 0 )
-	{
-		int cellCount = board.CellCount();
-		if ( cellCount == 81 )
-			timeOutSecs = 5;
-		else if ( cellCount == 256 )
-			timeOutSecs = 20;
-		else if ( cellCount == 625 )
-			timeOutSecs = 120;
-		else
-			timeOutSecs = 120;
-	}
+	timeOutSecs = ResolveTimeoutSeconds(board, timeOutSecs);
 
 	float solTime;
 	Board solution;
-	SudokuSolver *solver;
+	SudokuSolver *solver = nullptr;
 	
-	// ========================================================================
-	// SECTION 2.2: ALGORITHM SELECTION & CONFIGURATION
-	// ========================================================================
+	// 2.2: Algorithm selection and configuration
 	
-	if ( algorithm == 0 )
-		solver = new SudokuAntSystem( nAnts, q0, rho, 1.0f/board.CellCount(), evap);
-	else if ( algorithm == 1 )
-		solver = new BacktrackSearch();
-	else if ( algorithm == 2 )
-		solver = new ParallelSudokuAntSystem( nSubColonies, nAnts, q0, rho, 1.0f/board.CellCount(), evap);
-	else
-	{
-		cerr << "Invalid algorithm: " << algorithm << ". Use 0 (single-thread ACS), 1 (backtracking), or 2 (parallel ACS)." << endl;
-		exit(1);
-	}
+	solver = CreateSolver(algorithm, board, nAnts, nSubColonies, q0, rho, xi, bestEvap);
 
 	// Optionally show the puzzle after constraint propagation
 	if ( showInitial )
@@ -217,17 +247,13 @@ int main( int argc, char *argv[] )
 		cout << board.AsString(false, true) << endl;
 	}
 	
-	// ========================================================================
-	// SECTION 2.3: RUN SOLVER
-	// ========================================================================
+	// 2.3: Run solver
 	
-		success = solver->Solve(board, (float)timeOutSecs);
+	success = solver->Solve(board, (float)timeOutSecs);
 	solution = solver->GetSolution();
 	solTime = solver->GetSolutionTime();
 
-	// ========================================================================
-	// SECTION 2.4: SOLUTION VALIDATION & OUTPUT
-	// ========================================================================
+	// 2.4: Validate and emit output
 	
 	// Sanity check the solution
 	string errorMessage;

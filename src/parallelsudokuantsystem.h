@@ -15,15 +15,18 @@
 // Forward declaration
 class ParallelSudokuAntSystem;
 
-// Sub-colony class representing one thread's ant colony
+// SubColony: one independent ant colony executed by a worker thread.
 class SubColony : public IAntColony
 {
 private:
+	// Configuration
 	int numAnts;
 	float q0;
 	float rho;        // ACS evaporation parameter (used for both standard and communication updates)
+	float xi;         // ACS local pheromone update parameter
 	float pher0;
 	
+	// Local and received solution state
 	Board iterationBest;      // Best solution in current iteration (ΔT_ij^1 - local)
 	Board bestSol;            // Best solution found so far (used in standard Algorithm 0 update)
 	Board receivedIterationBest;  // Received iteration-best from ring topology (ΔT_ij^2)
@@ -39,7 +42,8 @@ private:
 	std::uniform_real_distribution<float> randomDist;
 	std::uniform_int_distribution<int> startPosDist;  // For ant starting positions (reused)
 	
-	float **pher; // pheromone matrix
+	// Pheromone matrix and dimensions
+	float **pher;
 	int numCells;
 	int numUnits;
 	
@@ -56,47 +60,45 @@ public:
 	float bestPher;           // Best pheromone value (for Algorithm 0 standard update)
 	float bestEvap;           // Best pheromone evaporation parameter
 	
-	SubColony(int id, int numAnts, float q0, float rho, float pher0, float bestEvap);
+	// Lifecycle
+	SubColony(int id, int numAnts, float q0, float rho, float xi, float pher0, float bestEvap);
 	~SubColony();
 	
-	// Run one iteration of the ant colony
+	// Iteration flow
+	void Initialize(const Board& puzzle);
 	void RunIteration(const Board& puzzle);
 	
-	// Standard Algorithm 0 global pheromone update - called every iteration
+	// Pheromone update rules
 	void UpdatePheromone();
-	
-	// Communication-based three-source pheromone update - called after exchanges
 	void UpdatePheromoneWithCommunication();
 	
 	// Get results
 	const Board& GetIterationBest() const { return iterationBest; }
 	const Board& GetBestSol() const { return bestSol; }
-	int GetIterationBestScore() const { return iterationBestScore; }
 	int GetBestSolScore() const { return bestSolScore; }
 	int GetCurrentIteration() const { return currentIteration; }
 	
-	// Set solutions (for communication)
+	// Communication inputs
 	void ReceiveIterationBest(const Board& solution);
 	void ReceiveBestSol(const Board& solution);
 	
-	// Reset for new puzzle
-	void Initialize(const Board& puzzle);
-	
-	// Helpers for ants
+	// IAntColony helpers for SudokuAnt
 	inline float Getq0() { return q0; }
 	inline float random() { return randomDist(randGen); }
 	inline float Pher(int i, int j) { return pher[i][j]; }
-	void LocalPheromoneUpdate(int iCell, int iChoice);
+	void LocalPheromoneUpdate(int cellIndex, int iChoice);
 };
 
 // Parallel Ant Colony System with multiple sub-colonies
 class ParallelSudokuAntSystem : public SudokuSolver
 {
 private:
+	// Configuration and colony collection
 	int numSubColonies;
 	float maxTime;  // Maximum time in seconds
 	std::vector<SubColony*> subColonies;
 	
+	// Global best/result metrics
 	Board globalBest;
 	int globalBestScore;
 	int iterationsCompleted;
@@ -104,13 +106,15 @@ private:
 	float communicationTime;
 	float solTime;
 	Timer solutionTimer;
+
+	// Communication interval timing state
 	std::atomic<bool> communicationPhaseActive;
 	std::atomic<int> communicationPhaseDone;
 	std::chrono::high_resolution_clock::time_point communicationPhaseStart;
 	
 	std::mt19937 masterRandGen;
 	
-	// Synchronization
+	// Synchronization primitives
 	std::mutex commMutex;
 	std::condition_variable commCV;
 	std::atomic<int> barrier;
@@ -121,21 +125,21 @@ private:
 	void CommunicateRingTopology();
 	void CommunicateRandomTopology(const std::vector<int>& matchArray);
 	
-	// Thread worker and helper methods
+	// Worker entry point
 	void SubColonyWorker(int colonyId, const Board& puzzle);
 	
-	// Modular helper methods for SubColonyWorker
+	// Worker/coordination helpers
 	bool CheckTimeout();
-	void ReportProgress(int colonyId, int iteration, SubColony* colony, const Board& puzzle);
+	void ReportProgress(int colonyId, int iteration, const Board& puzzle);
 	bool CheckSolutionFound(SubColony* colony);
-	void PerformBarrierSynchronization(const Board& puzzle);
-	void ExecuteMasterThreadTasks(const Board& puzzle);
+	void PerformBarrierSynchronization();
+	void ExecuteMasterThreadTasks();
 	void ExecuteWorkerThreadWait(std::unique_lock<std::mutex>& lock);
 	void CompleteCommunicationPhase();
 	
 public:
 	ParallelSudokuAntSystem(int numSubColonies, int numAntsPerColony, 
-	                        float q0, float rho, float pher0, float bestEvap);
+	                        float q0, float rho, float xi, float pher0, float bestEvap);
 	~ParallelSudokuAntSystem();
 	
 	virtual bool Solve(const Board& puzzle, float maxTime);

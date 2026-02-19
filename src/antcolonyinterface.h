@@ -9,7 +9,7 @@ public:
 	virtual float Getq0() = 0;
 	virtual float random() = 0;
 	virtual float Pher(int i, int j) = 0;
-	virtual void LocalPheromoneUpdate(int iCell, int iChoice) = 0;
+	virtual void LocalPheromoneUpdate(int cellIndex, int iChoice) = 0;
 };
 
 

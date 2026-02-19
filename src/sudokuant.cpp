@@ -2,10 +2,19 @@
 #include "sudokuantsystem.h"
 #include "constraintpropagation.h"
 
-void SudokuAnt::InitSolution(const Board &puzzle, int startCell )
+/*******************************************************************************
+ * InitSolution
+ *
+ * Prepares this ant for a new construction run:
+ * - copies the puzzle state
+ * - sets the starting cell
+ * - resets failure counters
+ * - re-allocates roulette buffers for weighted selection
+ ******************************************************************************/
+void SudokuAnt::InitSolution(const Board &puzzle, int cellIndex )
 {
-	sol.Copy(puzzle);
-	iCell = startCell;
+	candidateSolution.Copy(puzzle);
+	this->cellIndex = cellIndex;
 	failCells = 0;
 	if (roulette != nullptr)
 	{
@@ -16,48 +25,59 @@ void SudokuAnt::InitSolution(const Board &puzzle, int startCell )
 	rouletteVals = new ValueSet[puzzle.GetNumUnits()];
 }
 
+/*******************************************************************************
+ * StepSolution
+ *
+ * Advances one cell in this ant's construction path:
+ * - skips fixed/empty edge cases
+ * - chooses a value using ACS policy:
+ *   * greedy with probability q0
+ *   * roulette-wheel otherwise
+ * - applies local pheromone update after setting the cell
+ * - advances current index with wrap-around
+ ******************************************************************************/
 void SudokuAnt::StepSolution()
 {
-	if (sol.GetCell(iCell).Empty())
+	if (candidateSolution.GetCell(cellIndex).Empty())
 	{
 		failCells++;
 	}
-	else if ( !sol.GetCell(iCell).Fixed() )
+	else if ( !candidateSolution.GetCell(cellIndex).Fixed() )
 	{
 		// make a choice from the options
-		ValueSet choice = ValueSet(sol.GetNumUnits(), 1);
+		ValueSet choice = ValueSet(candidateSolution.GetNumUnits(), 1);
 		if (parent->random() < parent->Getq0())
 		{
 			// greedy selection
 			ValueSet best;
 			float maxPher = -1.0f;
 
-			for (int i = 0; i < sol.GetNumUnits(); i++)
+			for (int i = 0; i < candidateSolution.GetNumUnits(); i++)
 			{
-				if (sol.GetCell(iCell).Contains(choice))
+				if (candidateSolution.GetCell(cellIndex).Contains(choice))
 				{
-					if (parent->Pher(iCell, i) > maxPher)
+					if (parent->Pher(cellIndex, i) > maxPher)
 					{
-						maxPher = parent->Pher(iCell, i);
+						maxPher = parent->Pher(cellIndex, i);
 						best = choice;
 					}
 				}
 				choice <<= 1;
 			}
-SetCellAndPropagate(sol, iCell, best);
-			// do local pheromone update here
-			parent->LocalPheromoneUpdate(iCell, best.Index());
+			SetCellAndPropagate(candidateSolution, cellIndex, best);
+			// Apply ACS local update on the selected move.
+			parent->LocalPheromoneUpdate(cellIndex, best.Index());
 		}
 		else
 		{
 			// weighted selection
 			float totPher = 0.0f;
 			int numChoices = 0;
-			for (int i = 0; i < sol.GetNumUnits(); i++)
+			for (int i = 0; i < candidateSolution.GetNumUnits(); i++)
 			{
-				if (sol.GetCell(iCell).Contains(choice))
+				if (candidateSolution.GetCell(cellIndex).Contains(choice))
 				{
-					roulette[numChoices] = totPher + parent->Pher(iCell, i);
+					roulette[numChoices] = totPher + parent->Pher(cellIndex, i);
 					totPher = roulette[numChoices];
 					rouletteVals[numChoices] = choice;
 					++numChoices;
@@ -70,16 +90,16 @@ SetCellAndPropagate(sol, iCell, best);
 			{
 				if (roulette[i] > rouletteVal)
 				{
-				SetCellAndPropagate(sol, iCell, rouletteVals[i]);
-					// do local pheromone update here
-					parent->LocalPheromoneUpdate(iCell, rouletteVals[i].Index());
+					SetCellAndPropagate(candidateSolution, cellIndex, rouletteVals[i]);
+					// Apply ACS local update on the selected move.
+					parent->LocalPheromoneUpdate(cellIndex, rouletteVals[i].Index());
 					break;
 				}
 			}
 		}
 	}
-	++iCell;
-	if (iCell == sol.CellCount()) // wrap around
-		iCell = 0;
+	++cellIndex;
+	if (cellIndex == candidateSolution.CellCount()) // wrap around
+		cellIndex = 0;
 }
 

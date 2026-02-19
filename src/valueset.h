@@ -1,7 +1,6 @@
 #pragma once
 #include <cinttypes>
 #include <string>
-#include <iostream>
 
 #define MASK0 0xFFFFFFFFFFFFFFFF
 #define NBITS 64
@@ -57,9 +56,6 @@ public:
 		mask = MASK0 >> (NBITS - nMax);
 	};
 
-	void Add(uint64_t v) { bitmap |= v; }
-	void Remove(uint64_t v) { bitmap &= (mask & ~v); }
-	
 	std::string toString( const std::string &alphabet ) const
 	{
 		// for debugging - make a human-readable string of the cell set
@@ -84,11 +80,6 @@ public:
 			}
 		}
 	}
-	bool Contains(uint64_t val) const
-	{
-		return (val&bitmap) != 0;
-	}
-
 	bool Contains(const ValueSet &other) const
 	{
 		return (bitmap&other.bitmap) != 0;

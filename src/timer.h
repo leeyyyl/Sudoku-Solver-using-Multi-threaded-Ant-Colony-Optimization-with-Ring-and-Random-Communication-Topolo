@@ -1,5 +1,4 @@
 #pragma once
-#include <iostream>
 #ifdef _WIN32
 #include <windows.h>
 typedef LARGE_INTEGER TIME_TYPE;

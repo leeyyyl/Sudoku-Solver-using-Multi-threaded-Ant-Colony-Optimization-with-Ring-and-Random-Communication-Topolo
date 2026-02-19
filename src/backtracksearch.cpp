@@ -1,13 +1,35 @@
-//
-// backtracking search using the same comstraint propagation code as the ant colony system
-// HL 18/9/2017
-//
+// Backtracking search using the same constraint-propagation rules
+// as the ant-based solvers.
 #include "backtracksearch.h"
 #include "constraintpropagation.h"
 
+/*******************************************************************************
+ * Solve
+ *
+ * Initializes search state and starts recursive backtracking.
+ ******************************************************************************/
+bool BacktrackSearch::Solve(const Board& puzzle, float maxTime)
+{
+	solved = false;
+	timedOut = false;
+	timeOut = maxTime;
+	solutionTimer.Reset();
+	StepSolution(puzzle);
+	solTime = solutionTimer.Elapsed();
+	return solved;
+}
+
+/*******************************************************************************
+ * StepSolution
+ *
+ * Recursive backtracking step with:
+ * - timeout guard
+ * - minimum-remaining-values (MRV) next-cell choice
+ * - constraint propagation after each tentative assignment
+ ******************************************************************************/
 void BacktrackSearch::StepSolution(const Board &puzzle)
 {
-	// deal with timeout
+	// Timeout guard
 	if (timedOut)
 		return;
 	stepCount++;
@@ -19,7 +41,7 @@ void BacktrackSearch::StepSolution(const Board &puzzle)
 			return;
 		}
 	}
-	// find the cell with the least number of possibilities (minimum remaining values heuristic)
+	// Find the cell with the fewest possibilities (MRV heuristic).
 	int nextCell = -1;
 	int minCount = puzzle.GetNumUnits()+1;
 
@@ -33,14 +55,15 @@ void BacktrackSearch::StepSolution(const Board &puzzle)
 				break;
 		}
 	}
-	if (nextCell == -1) // should only be here if the puzzle is solved before we try anything
+	if (nextCell == -1)
 	{
+		// No unfixed cell left: solved.
 		solved = true;
 		solution.Copy(puzzle);
 		return;
 	}
 
-	// try the possibilities in turn
+	// Try each candidate value for nextCell.
 	ValueSet choice = ValueSet(puzzle.GetNumUnits(), 1);
 	for (int i = 0; i < puzzle.GetNumUnits(); i++)
 	{
@@ -48,37 +71,25 @@ void BacktrackSearch::StepSolution(const Board &puzzle)
 			return;
 		if ( puzzle.GetCell(nextCell).Contains(choice))
 		{
-			// copy the board
+			// Copy board and assign a candidate.
 			Board newBoard;
 			newBoard.Copy(puzzle);
-			// set the cell
-		SetCellAndPropagate(newBoard, nextCell, choice);
-			// did we solve the puzzle?
+			SetCellAndPropagate(newBoard, nextCell, choice);
+
+			// Check completion.
 			if (newBoard.FixedCellCount() == newBoard.CellCount())
 			{
-				// solved
 				solved = true;
 				solution.Copy(newBoard);
 				return;
 			}
-			// check no conflicts
+
+			// Recurse only if board remains feasible.
 			if (newBoard.InfeasibleCellCount() == 0)
 			{
-				// carry on and set the next cell
 				StepSolution(newBoard);
 			}
 		}
 		choice <<= 1;
 	}
-}
-
-bool BacktrackSearch::Solve(const Board& puzzle, float maxTime)
-{
-	solved = false;
-	timedOut = false;
-	timeOut = maxTime;
-	solutionTimer.Reset();
-	StepSolution(puzzle);
-	solTime = solutionTimer.Elapsed();
-	return solved;
 }

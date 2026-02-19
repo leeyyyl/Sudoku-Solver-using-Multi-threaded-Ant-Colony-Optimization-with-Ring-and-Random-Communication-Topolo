@@ -14,47 +14,9 @@
  ******************************************************************************/
 
 #include "sudokuantsystem.h"
-#include <iostream>
 
 // ============================================================================
-// SECTION 1: INITIALIZATION
-// ============================================================================
-
-/*******************************************************************************
- * InitPheromone - Allocate and initialize the pheromone matrix
- * 
- * Creates a 2D pheromone matrix:
- * - Rows: cells in the puzzle (numCells)
- * - Columns: possible values for each cell (valuesPerCell)
- * 
- * All pheromone values are initialized uniformly to pher0.
- ******************************************************************************/
-void SudokuAntSystem::InitPheromone(int numCells, int valuesPerCell )
-{
-	this->numCells = numCells;
-	pher = new float*[numCells];
-	for (int i = 0; i < numCells; i++)
-	{
-		pher[i] = new float[valuesPerCell];
-		for (int j = 0; j < valuesPerCell; j++)
-			pher[i][j] = pher0;
-	}
-}
-
-/*******************************************************************************
- * ClearPheromone - Deallocate the pheromone matrix
- * 
- * Called at the end of solving to clean up memory.
- ******************************************************************************/
-void SudokuAntSystem::ClearPheromone()
-{
-	for (int i = 0; i < numCells; i++)
-		delete[] pher[i];
-	delete[] pher;
-}
-
-// ============================================================================
-// SECTION 2: MAIN SOLVE LOOP - Algorithm 0
+// SECTION 1: ENTRY POINT (ALGORITHM 0)
 // ============================================================================
 
 /*******************************************************************************
@@ -159,8 +121,44 @@ bool SudokuAntSystem::Solve(const Board& puzzle, float maxTime )
 }
 
 // ============================================================================
-// SECTION 3: PHEROMONE MANAGEMENT
+// SECTION 2: HELPER FUNCTIONS (ORDERED BY USAGE FLOW)
 // ============================================================================
+
+/*******************************************************************************
+ * InitPheromone - Allocate and initialize the pheromone matrix
+ *
+ * Creates a [cell x value] matrix and initializes all entries to pher0.
+ ******************************************************************************/
+void SudokuAntSystem::InitPheromone(int numCells, int valuesPerCell )
+{
+	this->numCells = numCells;
+	pher = new float*[numCells];
+	for (int i = 0; i < numCells; i++)
+	{
+		pher[i] = new float[valuesPerCell];
+		for (int j = 0; j < valuesPerCell; j++)
+			pher[i][j] = pher0;
+	}
+}
+
+/*******************************************************************************
+ * LocalPheromoneUpdate - Local pheromone update (ACS rule)
+ *
+ * Called by ants during construction to encourage exploration:
+ *   τ(i,j) ← (1-ξ)·τ(i,j) + ξ·τ₀
+ ******************************************************************************/
+void SudokuAntSystem::LocalPheromoneUpdate(int cellIndex, int iChoice)
+{
+	pher[cellIndex][iChoice] = pher[cellIndex][iChoice] * (1.0f - xi) + pher0 * xi;
+}
+
+/*******************************************************************************
+ * PherAdd - Calculate pheromone reinforcement from solution quality
+ ******************************************************************************/
+float SudokuAntSystem::PherAdd(int numCellsFixed)
+{
+	return numCells / (float)(numCells - numCellsFixed);
+}
 
 /*******************************************************************************
  * UpdatePheromone - Global pheromone update (ACS rule)
@@ -183,35 +181,13 @@ void SudokuAntSystem::UpdatePheromone()
 }
 
 /*******************************************************************************
- * LocalPheromoneUpdate - Local pheromone update (ACS rule)
- * 
- * Called during ant construction to slightly decrease pheromone on visited
- * edges, encouraging exploration:
- *   τ(i,j) ← 0.9·τ(i,j) + 0.1·τ₀
- * 
- * Parameters:
- *   iCell   - The cell being filled
- *   iChoice - The value chosen for the cell
+ * ClearPheromone - Deallocate the pheromone matrix
+ *
+ * Called at the end of solving to release matrix memory.
  ******************************************************************************/
-void SudokuAntSystem::LocalPheromoneUpdate(int iCell, int iChoice)
+void SudokuAntSystem::ClearPheromone()
 {
-	pher[iCell][iChoice] = pher[iCell][iChoice] * 0.9f + pher0 * 0.1f;
-}
-
-/*******************************************************************************
- * PherAdd - Calculate pheromone reinforcement value
- * 
- * Calculates the pheromone deposit amount based on solution quality:
- *   pheromone = numCells / (numCells - numCellsFixed)
- * 
- * Better solutions (more cells filled) receive higher pheromone values.
- * 
- * Parameters:
- *   numCellsFixed - Number of cells filled in the solution
- * 
- * Returns: Pheromone reinforcement value
- ******************************************************************************/
-float SudokuAntSystem::PherAdd(int numCellsFixed)
-{
-	return numCells / (float)(numCells - numCellsFixed);
+	for (int i = 0; i < numCells; i++)
+		delete[] pher[i];
+	delete[] pher;
 }

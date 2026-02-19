@@ -27,8 +27,8 @@
 // ----------------------------------------------------------------------------
 // Constructor: Initialize a sub-colony with its own parameters
 // ----------------------------------------------------------------------------
-SubColony::SubColony(int id, int numAnts, float q0, float rho, float pher0, float bestEvap)
-	: numAnts(numAnts), q0(q0), rho(rho), pher0(pher0), bestEvap(bestEvap), bestPher(0.0f),
+SubColony::SubColony(int id, int numAnts, float q0, float rho, float xi, float pher0, float bestEvap)
+	: numAnts(numAnts), q0(q0), rho(rho), xi(xi), pher0(pher0), bestEvap(bestEvap), bestPher(0.0f),
 	  iterationBestScore(0), bestSolScore(0), receivedIterationBestScore(0), receivedBestSolScore(0),
 	  currentIteration(0), pher(nullptr), numCells(0), numUnits(0),
 	  contributions(nullptr), hasContribution(nullptr)
@@ -218,9 +218,9 @@ void SubColony::UpdatePheromoneWithCommunication()
 	}
 }
 
-void SubColony::LocalPheromoneUpdate(int iCell, int iChoice)
+void SubColony::LocalPheromoneUpdate(int cellIndex, int iChoice)
 {
-	pher[iCell][iChoice] = pher[iCell][iChoice] * 0.9f + pher0 * 0.1f;
+	pher[cellIndex][iChoice] = pher[cellIndex][iChoice] * (1.0f - xi) + pher0 * xi;
 }
 
 // ----------------------------------------------------------------------------
@@ -305,7 +305,7 @@ void SubColony::ReceiveBestSol(const Board& solution)
 // Constructor: Create the parallel system with N sub-colonies
 // ----------------------------------------------------------------------------
 ParallelSudokuAntSystem::ParallelSudokuAntSystem(int nSubColonies, int numAntsPerColony,
-	float q0, float rho, float pher0, float bestEvap)
+	float q0, float rho, float xi, float pher0, float bestEvap)
 	: numSubColonies(nSubColonies), maxTime(120.0f),
 	  globalBestScore(0), iterationsCompleted(0), communicationOccurred(false), communicationTime(0.0f),
 	  solTime(0.0f), barrier(0), stopFlag(false),
@@ -315,7 +315,7 @@ ParallelSudokuAntSystem::ParallelSudokuAntSystem(int nSubColonies, int numAntsPe
 	// Note: rho is used for both standard ACS global update and communication update
 	for (int i = 0; i < numSubColonies; i++)
 	{
-		subColonies.push_back(new SubColony(i, numAntsPerColony, q0, rho, pher0, bestEvap));
+		subColonies.push_back(new SubColony(i, numAntsPerColony, q0, rho, xi, pher0, bestEvap));
 	}
 	
 	// Initialize master random generator (for random topology matching)
@@ -327,6 +327,141 @@ ParallelSudokuAntSystem::~ParallelSudokuAntSystem()
 {
 	for (auto colony : subColonies)
 		delete colony;
+}
+
+// ============================================================================
+// MAIN SOLVE METHOD - Entry point for parallel algorithm
+// ============================================================================
+// This method orchestrates the entire parallel solving process:
+// 1. Initializes synchronization structures
+// 2. Spawns N worker threads (one per sub-colony)
+// 3. Waits for completion (solution found or timeout)
+// 4. Collects results from all threads
+// ============================================================================
+bool ParallelSudokuAntSystem::Solve(const Board& puzzle, float timeLimit)
+{
+	// === INITIALIZATION ===
+	maxTime = (timeLimit > 0) ? timeLimit : 120.0f;
+	
+	solutionTimer.Reset();
+	communicationOccurred = false;
+	communicationTime = 0.0f;
+	communicationPhaseActive.store(false);
+	communicationPhaseDone.store(0);
+	stopFlag.store(false);   // Shared stop signal (atomic)
+	barrier.store(0);        // Synchronization counter (atomic)
+	
+	globalBest.Copy(puzzle);
+	globalBestScore = puzzle.FixedCellCount();
+	
+	// === THREAD CREATION ===
+	std::vector<std::thread> threads;
+	for (int i = 0; i < numSubColonies; i++)
+	{
+		threads.emplace_back(&ParallelSudokuAntSystem::SubColonyWorker, this, i, std::ref(puzzle));
+	}
+	
+	// === THREAD SYNCHRONIZATION ===
+	for (auto& thread : threads)
+	{
+		thread.join();
+	}
+	
+	// === RESULT COLLECTION ===
+	iterationsCompleted = 0;
+	for (int i = 0; i < numSubColonies; i++)
+	{
+		if (subColonies[i]->GetBestSolScore() > globalBestScore)
+		{
+			globalBest.Copy(subColonies[i]->GetBestSol());
+			globalBestScore = subColonies[i]->GetBestSolScore();
+		}
+		
+		if (subColonies[i]->GetCurrentIteration() > iterationsCompleted)
+		{
+			iterationsCompleted = subColonies[i]->GetCurrentIteration();
+		}
+	}
+	
+	solTime = solutionTimer.Elapsed();
+	return (globalBestScore == puzzle.CellCount());
+}
+
+// ============================================================================
+// SUBCOLONY WORKER THREAD - Main parallel execution loop
+// ============================================================================
+// This is the entry point for each thread. Each sub-colony runs independently
+// in its own thread, periodically synchronizing for solution exchange.
+//
+// TERMINATION CONDITIONS:
+// 1. Any colony finds a complete solution (all cells filled correctly)
+// 2. Global timeout exceeded (default: 120 seconds)
+//
+// SYNCHRONIZATION:
+// - Threads run independently most of the time (parallel execution)
+// - Periodic barrier synchronization for solution communication
+// - Master thread performs communication while others wait
+// ============================================================================
+void ParallelSudokuAntSystem::SubColonyWorker(int colonyId, const Board& puzzle)
+{
+	SubColony* colony = subColonies[colonyId];
+	colony->Initialize(puzzle);
+	
+	int iter = 0;
+	
+	// Optimization: for a single thread, avoid repeated atomic loads.
+	bool shouldStop = false;
+	bool useLocalStop = (numSubColonies == 1);
+	
+	while (useLocalStop ? !shouldStop : !stopFlag.load())
+	{
+		if (CheckTimeout())
+		{
+			if (useLocalStop)
+				shouldStop = true;
+			break;
+		}
+		
+		iter++;
+		colony->currentIteration = iter;
+		colony->RunIteration(puzzle);
+		
+		// Either standard Algorithm 0 update OR communication update.
+		bool shouldCommunicate = false;
+		if (numSubColonies > 1)
+		{
+			// Before iter 200: every 100 iterations. After: every 10 iterations.
+			if (iter < 200)
+				shouldCommunicate = (iter % 100 == 0);
+			else
+				shouldCommunicate = (iter % 10 == 0);
+		}
+		
+		if (shouldCommunicate)
+		{
+			PerformBarrierSynchronization();
+			colony->UpdatePheromoneWithCommunication();
+			CompleteCommunicationPhase();
+			
+			if (useLocalStop && stopFlag.load())
+				shouldStop = true;
+			if (useLocalStop ? shouldStop : stopFlag.load())
+				break;
+		}
+		else
+		{
+			colony->UpdatePheromone();
+			colony->bestPher *= (1.0f - colony->bestEvap);
+		}
+		
+		ReportProgress(colonyId, iter, puzzle);
+		if (CheckSolutionFound(colony))
+		{
+			if (useLocalStop)
+				shouldStop = true;
+			break;
+		}
+	}
 }
 
 std::vector<int> ParallelSudokuAntSystem::GenerateMatchArray()
@@ -426,7 +561,7 @@ bool ParallelSudokuAntSystem::CheckTimeout()
 // ReportProgress: Display progress information (Colony 0 only)
 // Shows the global best across ALL colonies, not just Colony 0
 // ----------------------------------------------------------------------------
-void ParallelSudokuAntSystem::ReportProgress(int colonyId, int iteration, SubColony* colony, const Board& puzzle)
+void ParallelSudokuAntSystem::ReportProgress(int colonyId, int iteration, const Board& puzzle)
 {
 	if (colonyId == 0 && iteration % 50 == 0)
 	{
@@ -466,7 +601,7 @@ bool ParallelSudokuAntSystem::CheckSolutionFound(SubColony* colony)
 // ExecuteMasterThreadTasks: Tasks performed by the last thread to arrive
 // This thread becomes the "master" and performs communication
 // ----------------------------------------------------------------------------
-void ParallelSudokuAntSystem::ExecuteMasterThreadTasks(const Board& puzzle)
+void ParallelSudokuAntSystem::ExecuteMasterThreadTasks()
 {
 	// Mark that communication occurred
 	communicationOccurred = true;
@@ -543,7 +678,7 @@ void ParallelSudokuAntSystem::CompleteCommunicationPhase()
 // PerformBarrierSynchronization: Coordinate all threads for communication
 // Implements barrier pattern with master/worker roles
 // ----------------------------------------------------------------------------
-void ParallelSudokuAntSystem::PerformBarrierSynchronization(const Board& puzzle)
+void ParallelSudokuAntSystem::PerformBarrierSynchronization()
 {
 	// Pre-check: Don't enter barrier if stop signal already set
 	if (stopFlag.load())
@@ -572,7 +707,7 @@ void ParallelSudokuAntSystem::PerformBarrierSynchronization(const Board& puzzle)
 	if (arrived == numSubColonies)
 	{
 		// Last thread to arrive becomes MASTER
-		ExecuteMasterThreadTasks(puzzle);
+		ExecuteMasterThreadTasks();
 	}
 	else
 	{
@@ -583,190 +718,4 @@ void ParallelSudokuAntSystem::PerformBarrierSynchronization(const Board& puzzle)
 	// === EXIT CRITICAL SECTION ===
 	// Lock released automatically by unique_lock destructor
 }
-
-// ============================================================================
-// SUBCOLONY WORKER THREAD - Main parallel execution loop
-// ============================================================================
-// This is the entry point for each thread. Each sub-colony runs independently
-// in its own thread, periodically synchronizing for solution exchange.
-//
-// TERMINATION CONDITIONS:
-// 1. Any colony finds a complete solution (all cells filled correctly)
-// 2. Global timeout exceeded (default: 120 seconds)
-//
-// SYNCHRONIZATION:
-// - Threads run independently most of the time (parallel execution)
-// - Periodic barrier synchronization for solution communication
-// - Master thread performs communication while others wait
-//
-// EXECUTION FLOW (per iteration):
-// 1. Check timeout → 2. Run iteration → 3. Update pheromones → 
-// 4. Report progress → 5. Check solution → 6. Communicate (periodic)
-// ============================================================================
-void ParallelSudokuAntSystem::SubColonyWorker(int colonyId, const Board& puzzle)
-{
-	SubColony* colony = subColonies[colonyId];
-	colony->Initialize(puzzle);
-	
-	int iter = 0;
-	
-	// === OPTIMIZATION: Use local bool for single thread to avoid atomic overhead ===
-	bool shouldStop = false;
-	bool useLocalStop = (numSubColonies == 1);
-	
-	// === MAIN ITERATION LOOP ===
-	while (useLocalStop ? !shouldStop : !stopFlag.load())
-	{
-		// --- STEP 1: Check Termination Conditions ---
-		if (CheckTimeout())
-		{
-			if (useLocalStop)
-				shouldStop = true;
-			break;
-		}
-		
-		iter++;
-		colony->currentIteration = iter;
-		
-		// --- STEP 2: Run Colony Iteration (Independent Parallel Work) ---
-		colony->RunIteration(puzzle);
-		
-		// --- STEP 3: Pheromone Update (Mutually Exclusive) ---
-		// Either standard Algorithm 0 update OR three-source communication update
-		// Skip communication if only 1 thread (behaves like Algorithm 0)
-		bool shouldCommunicate = false;
-		if (numSubColonies > 1)
-		{
-			// Before iteration 200: communicate every 100 iterations (at 100, 200)
-			// After iteration 200: communicate every 10 iterations (at 210, 220, etc.)
-		if (iter < 200)
-		{
-			// Every 100 iterations: 100, 200
-			shouldCommunicate = (iter % 100 == 0);
-		}
-		else
-		{
-			// Every 10 iterations: 210, 220, 230, etc.
-			shouldCommunicate = (iter % 10 == 0);
-		}
-		}
-		// If numSubColonies == 1, shouldCommunicate stays false (always use Algorithm 0 update)
-		
-		if (shouldCommunicate)
-		{
-			// --- STEP 3a: Communication Phase (Periodic Barrier Synchronization) ---
-			PerformBarrierSynchronization(puzzle);
-			
-			// --- STEP 3b: Three-Source Communication Pheromone Update ---
-			// Uses: local iteration-best + received iteration-best + received best-so-far
-			colony->UpdatePheromoneWithCommunication();
-			CompleteCommunicationPhase();
-			
-			// Check stop flag after synchronization
-			if (useLocalStop)
-			{
-				if (stopFlag.load())  // Still check atomic for timeout from CheckTimeout
-					shouldStop = true;
-			}
-			if (useLocalStop ? shouldStop : stopFlag.load())
-				break;
-		}
-		else
-		{
-			// --- STEP 3c: Standard Algorithm 0 Global Pheromone Update ---
-			// Uses: only local best-so-far
-			colony->UpdatePheromone();
-			
-			// --- STEP 3d: Decay Best Pheromone (only when bestPher is actually used) ---
-			// bestPher is not used during communication intervals, so decay only here
-			colony->bestPher *= (1.0f - colony->bestEvap);
-		}
-		
-		// --- STEP 4: Report Progress (Colony 0 Only) ---
-		ReportProgress(colonyId, iter, colony, puzzle);
-		
-		// --- STEP 5: Check if Solution Found ---
-		if (CheckSolutionFound(colony))
-		{
-			if (useLocalStop)
-				shouldStop = true;
-			break;
-		}
-	}
-}
-
-// ============================================================================
-// MAIN SOLVE METHOD - Entry point for parallel algorithm
-// ============================================================================
-// This method orchestrates the entire parallel solving process:
-// 1. Initializes synchronization structures
-// 2. Spawns N worker threads (one per sub-colony)
-// 3. Waits for completion (solution found or timeout)
-// 4. Collects results from all threads
-//
-// EXECUTION FLOW:
-// START → [Launch Threads] → [Parallel Execution] → [Join Threads] → [Collect Results] → END
-// ============================================================================
-bool ParallelSudokuAntSystem::Solve(const Board& puzzle, float timeLimit)
-{
-	// === INITIALIZATION ===
-	maxTime = (timeLimit > 0) ? timeLimit : 120.0f;
-	
-	solutionTimer.Reset();
-	communicationOccurred = false;
-	communicationTime = 0.0f;
-	communicationPhaseActive.store(false);
-	communicationPhaseDone.store(0);
-	stopFlag.store(false);   // Shared stop signal (atomic)
-	barrier.store(0);        // Synchronization counter (atomic)
-	
-	globalBest.Copy(puzzle);
-	globalBestScore = puzzle.FixedCellCount();
-	
-	// === THREAD CREATION ===
-	// Launch N worker threads, one per sub-colony
-	std::vector<std::thread> threads;
-	for (int i = 0; i < numSubColonies; i++)
-	{
-		threads.emplace_back(&ParallelSudokuAntSystem::SubColonyWorker, this, i, std::ref(puzzle));
-	}
-	
-	// === PARALLEL EXECUTION ===
-	// Threads run independently, periodically synchronizing for communication
-	// (Execution happens in SubColonyWorker method)
-	
-	// === THREAD SYNCHRONIZATION ===
-	// Wait for all threads to complete (either solution found or timeout)
-	for (auto& thread : threads)
-	{
-		thread.join();
-	}
-	
-	// === RESULT COLLECTION ===
-	// Find the best solution across all sub-colonies
-	iterationsCompleted = 0;
-	for (int i = 0; i < numSubColonies; i++)
-	{
-		// Find global best solution
-		if (subColonies[i]->GetBestSolScore() > globalBestScore)
-		{
-			globalBest.Copy(subColonies[i]->GetBestSol());
-			globalBestScore = subColonies[i]->GetBestSolScore();
-		}
-		
-		// Track maximum iterations (for reporting)
-		if (subColonies[i]->GetCurrentIteration() > iterationsCompleted)
-		{
-			iterationsCompleted = subColonies[i]->GetCurrentIteration();
-		}
-	}
-	
-	solTime = solutionTimer.Elapsed();
-	
-	// Return true if complete solution found
-	bool solved = (globalBestScore == puzzle.CellCount());
-	
-	return solved;
-}
-
 
